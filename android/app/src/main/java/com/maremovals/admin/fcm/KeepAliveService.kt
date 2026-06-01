@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 
 import androidx.core.app.NotificationCompat
 
@@ -61,14 +62,27 @@ class KeepAliveService : Service() {
       .setContentIntent(tapPi)
       .build()
 
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-      startForeground(
-        KEEPALIVE_NOTIFICATION_ID,
-        notification,
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING,
-      )
-    } else {
-      startForeground(KEEPALIVE_NOTIFICATION_ID, notification)
+    // CRITICAL: startForeground() must never crash the app. On Android 12+
+    // it throws ForegroundServiceStartNotAllowedException when promotion is
+    // not permitted (e.g. when started from Application.onCreate before any
+    // Activity is resumed), and on Android 14+ it can throw a
+    // ForegroundServiceTypeException. This runs on the main thread inside the
+    // service, so an uncaught throw here kills the whole process ("keeps
+    // stopping"). The keep-alive service is best-effort — if it can't start,
+    // FCM still works while the app is in the foreground, so swallow and stop.
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        startForeground(
+          KEEPALIVE_NOTIFICATION_ID,
+          notification,
+          ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING,
+        )
+      } else {
+        startForeground(KEEPALIVE_NOTIFICATION_ID, notification)
+      }
+    } catch (t: Throwable) {
+      Log.w(TAG, "KeepAliveService.startForeground failed; stopping service", t)
+      stopSelf()
     }
   }
 
@@ -92,6 +106,7 @@ class KeepAliveService : Service() {
   }
 
   companion object {
+    private const val TAG = "KeepAliveService"
     const val KEEPALIVE_CHANNEL_ID = "ma-admin-keepalive"
     private const val KEEPALIVE_NOTIFICATION_ID = 4242
 

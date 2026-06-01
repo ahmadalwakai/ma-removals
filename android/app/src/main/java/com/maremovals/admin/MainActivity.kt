@@ -9,6 +9,7 @@ import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
 import com.facebook.react.defaults.DefaultReactActivityDelegate
 
+import com.maremovals.admin.fcm.KeepAliveService
 import com.maremovals.admin.fcm.Notifier
 
 import expo.modules.ReactActivityDelegateWrapper
@@ -21,6 +22,19 @@ class MainActivity : ReactActivity() {
     setTheme(R.style.AppTheme);
     super.onCreate(null)
     captureDeeplinkExtra(intent)
+  }
+
+  override fun onResume() {
+    super.onResume()
+    // Start the keep-alive foreground service here (not in
+    // Application.onCreate) so the app is genuinely in the foreground and the
+    // OS permits promoting a `remoteMessaging` foreground service. The service
+    // also guards startForeground() so it can never crash the app.
+    try {
+      KeepAliveService.start(this)
+    } catch (_: Throwable) {
+      // Best-effort: FCM still works while the app is foreground.
+    }
   }
 
   override fun onNewIntent(intent: Intent) {

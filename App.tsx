@@ -1,20 +1,33 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { StatusBar } from "expo-status-bar";
+import { StyleSheet, View } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+
+import { colors } from "./src/config";
+import { AdminApp } from "./src/screens/AdminApp";
 
 export default function App() {
   return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
+    <SafeAreaProvider>
+      <View style={styles.root}>
+        <StatusBar style="light" />
+        <SafeAreaView
+          style={styles.safe}
+          edges={["top", "bottom", "left", "right"]}
+        >
+          <AdminApp />
+        </SafeAreaView>
+      </View>
+    </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: colors.ink,
+  },
+  safe: {
+    flex: 1,
+    backgroundColor: colors.ink,
   },
 });

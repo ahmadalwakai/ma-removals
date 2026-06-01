@@ -11,7 +11,6 @@ import com.facebook.react.ReactHost
 import com.facebook.react.common.ReleaseLevel
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint
 
-import com.maremovals.admin.fcm.KeepAliveService
 import com.maremovals.admin.fcm.MAAdminIntentsPackage
 import com.maremovals.admin.fcm.Notifier
 
@@ -40,16 +39,13 @@ class MainApplication : Application(), ReactApplication {
     loadReactNative(this)
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
 
-    // Make sure the notification channels and the keep-alive
-    // foreground service are ready before any FCM payload arrives.
+    // Make sure the notification channels are ready before any FCM payload
+    // arrives. The keep-alive foreground service is intentionally NOT started
+    // here: promoting a `remoteMessaging` foreground service from
+    // Application.onCreate (before any Activity is resumed) is disallowed on
+    // Android 12+ and throws inside startForeground(), crashing the process.
+    // MainActivity.onResume starts it once the app is genuinely foreground.
     Notifier.ensureChannel(this)
-    try {
-      KeepAliveService.start(this)
-    } catch (_: Throwable) {
-      // Some OEMs (Xiaomi, Huawei) reject startForegroundService from
-      // Application.onCreate when the launcher restores the process.
-      // Failing silently is safe — FCM still works in the foreground.
-    }
   }
 
   override fun onConfigurationChanged(newConfig: Configuration) {
