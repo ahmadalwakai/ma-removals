@@ -38,4 +38,13 @@ yarn-error.*
 
 # generated native folders
 /ios
-/android
+
+# Android: track native source (custom Kotlin/FCM code + google-services.json),
+# but ignore build artifacts so EAS uses the committed native project as-is.
+/android/build/
+/android/app/build/
+/android/.gradle/
+/android/.kotlin/
+/android/.cxx/
+/android/app/.cxx/
+/android/local.properties

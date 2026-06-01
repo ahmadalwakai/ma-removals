@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "756746226447",
+    "project_id": "maremovals-ade8f",
+    "storage_bucket": "maremovals-ade8f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:756746226447:android:80579657b855effbac4c7a",
+        "android_client_info": {
+          "package_name": "maremovals.uk"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyASAqtdrOtZRyVM5OpP4pIr7jQIKv_f0dk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
