@@ -131,8 +131,10 @@ internal object Notifier {
     return try {
       val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
       val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-      !pm.isInteractive || km.isKeyguardLocked
-    } catch (_: Throwable) {
+      val interactive: Boolean = pm.isInteractive
+      val locked: Boolean = km.isKeyguardLocked
+      !interactive || locked
+    } catch (e: Throwable) {
       false
     }
   }
