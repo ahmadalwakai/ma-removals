@@ -166,6 +166,13 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 
+    // Firebase Cloud Messaging — required by our native Kotlin lock-screen
+    // handler (FCMService / Notifier). react-native-firebase pulls these in
+    // as `implementation` (not `api`), so they are NOT exposed transitively to
+    // this app module; declare them explicitly so the custom Kotlin compiles.
+    implementation(platform("com.google.firebase:firebase-bom:34.4.0"))
+    implementation("com.google.firebase:firebase-messaging")
+
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";
     def isWebpAnimatedEnabled = (findProperty('expo.webp.animated') ?: "") == "true";
