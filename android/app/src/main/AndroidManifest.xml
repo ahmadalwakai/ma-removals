@@ -30,9 +30,9 @@
 
     <!-- Default FCM notification icon + colour. Used when the system has to
          render a heads-up before our service catches the message. -->
-    <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@mipmap/ic_launcher"/>
-    <meta-data android:name="com.google.firebase.messaging.default_notification_color" android:resource="@android:color/holo_green_dark"/>
-    <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="ma-admin-alerts"/>
+    <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@mipmap/ic_launcher" tools:replace="android:resource"/>
+    <meta-data android:name="com.google.firebase.messaging.default_notification_color" android:resource="@android:color/holo_green_dark" tools:replace="android:resource"/>
+    <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="ma-admin-alerts" tools:replace="android:value"/>
 
     <activity android:name=".MainActivity" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|smallestScreenSize" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.App.SplashScreen" android:exported="true" android:screenOrientation="portrait">
       <intent-filter>
