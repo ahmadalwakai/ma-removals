@@ -1,0 +1,16 @@
+.logoImageWrapper {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  flex-shrink: 0;
+}
+
+.neonArc {
+  position: absolute;
+  top: 0;
+  left: 0;
+  animation: maNeonOrbit 2.4s linear infinite;
+  filter: drop-shadow(0 0 3px #2563EB) drop-shadow(0 0 7px #2563EB);
+  will-change: transform;
+  pointer-events: none;
+}

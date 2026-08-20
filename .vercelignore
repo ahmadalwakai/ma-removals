@@ -1,0 +1,22 @@
+# Keep deployment payload lean and avoid Vercel per-file upload limits.
+
+# Local dependency/build output
+node_modules/
+.next/
+out/
+
+# Local mobile artifacts (not needed by the web deployment)
+builds/
+
+# Misc local files
+coverage/
+.vercel/
+.env
+.env.*
+!.env.example
+tsconfig.tsbuildinfo
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

@@ -1,66 +1,129 @@
-import Image from "next/image";
-import styles from "./page.module.css";
+import type { Metadata } from "next";
+import {
+  HeroSection,
+  TrustBar,
+  ServicesGrid,
+  StatsBand,
+  HowItWorksSection,
+  WhyUsSection,
+  GuaranteeBand,
+  TestimonialsSection,
+  AreasSection,
+  FAQSection,
+  FindUsSection,
+  BottomCTASection,
+} from "@/components/sections/HomePageSections";
+import { SITE, FAQS } from "@/lib/constants";
 
-export default function Home() {
+export const metadata: Metadata = {
+  title: `${SITE.name} — ${SITE.tagline}`,
+  description:
+    "MA Removals — house moves, office relocations, and furniture deliveries across Glasgow, Edinburgh, and Dundee. Fixed prices, fully insured, book online in minutes.",
+  alternates: {
+    canonical: SITE.url,
+  },
+};
+
+const organizationJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "MovingCompany",
+  "@id": `${SITE.url}/#organization`,
+  name: SITE.name,
+  alternateName: "M&A Removals",
+  url: SITE.url,
+  logo: `${SITE.url}/images/logo.png`,
+  image: `${SITE.url}/images/hero/hero-01.jpg`,
+  telephone: SITE.phone,
+  email: SITE.email,
+  priceRange: "££",
+  description:
+    "Professional removals across Glasgow, Edinburgh and Dundee. Fully insured house moves, van with man, office relocations and furniture deliveries with fixed prices.",
+  address: {
+    "@type": "PostalAddress",
+    addressLocality: "Glasgow",
+    addressRegion: "Scotland",
+    addressCountry: "GB",
+  },
+  geo: {
+    "@type": "GeoCoordinates",
+    latitude: SITE.maps.latitude,
+    longitude: SITE.maps.longitude,
+  },
+  hasMap: SITE.maps.profileUrl,
+  aggregateRating: {
+    "@type": "AggregateRating",
+    ratingValue: SITE.maps.rating,
+    reviewCount: SITE.maps.reviewCount,
+    bestRating: 5,
+    worstRating: 1,
+  },
+  areaServed: ["Glasgow", "Edinburgh", "Dundee", "Aberdeen", "Stirling", "Inverness", "Perth", "Paisley", "Falkirk", "Livingston", "Kilmarnock", "Ayr", "Dunfermline", "Kirkcaldy", "St Andrews", "Galashiels", "Dumfries", "Fort William", "Oban", "Scotland"].map(
+    (name) => ({ "@type": "City", name })
+  ),
+  openingHoursSpecification: [
+    {
+      "@type": "OpeningHoursSpecification",
+      dayOfWeek: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+      opens: "06:00",
+      closes: "22:00",
+    },
+  ],
+  sameAs: [SITE.social.instagram, SITE.social.tiktok, SITE.social.facebook, SITE.maps.profileUrl],
+};
+
+const websiteJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "@id": `${SITE.url}/#website`,
+  url: SITE.url,
+  name: SITE.name,
+  publisher: { "@id": `${SITE.url}/#organization` },
+  inLanguage: "en-GB",
+  potentialAction: {
+    "@type": "SearchAction",
+    target: `${SITE.url}/areas?q={search_term_string}`,
+    "query-input": "required name=search_term_string",
+  },
+};
+
+const faqJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "@id": `${SITE.url}/#faq`,
+  mainEntity: FAQS.map((f) => ({
+    "@type": "Question",
+    name: f.q,
+    acceptedAnswer: { "@type": "Answer", text: f.a },
+  })),
+};
+
+export default function HomePage() {
   return (
-    <div className={styles.page}>
-      <main className={styles.main}>
-        <Image
-          className={styles.logo}
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className={styles.intro}>
-          <h1>To get started, edit the page.tsx file.</h1>
-          <p>
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className={styles.logo}
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className={styles.secondary}
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
+      />
+      <HeroSection />
+      <TrustBar />
+      <ServicesGrid />
+      <StatsBand />
+      <HowItWorksSection />
+      <WhyUsSection />
+      <GuaranteeBand />
+      <TestimonialsSection />
+      <AreasSection />
+      <FindUsSection />
+      <FAQSection />
+      <BottomCTASection />
+    </>
   );
 }
