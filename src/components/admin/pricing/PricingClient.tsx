@@ -310,6 +310,19 @@ function pence(value: string) {
   return Number.isFinite(parsed) ? Math.round(parsed * 100) : null;
 }
 
+function benchmarkKind(benchmark: CompetitorBenchmarkRow) {
+  const homeSizes = new Set(["studio", "1-bedroom", "2-bedrooms", "3-bedrooms", "4-bedrooms", "5-plus-bedrooms"]);
+  return (benchmark.moveType === "house-move" || benchmark.moveType === "flat-move") && homeSizes.has(benchmark.propertySize)
+    ? "Home removal"
+    : "Item-led";
+}
+
+function benchmarkPreviewPence(benchmark: CompetitorBenchmarkRow) {
+  return benchmarkKind(benchmark) === "Home removal"
+    ? Math.floor(benchmark.benchmarkPricePence * 0.9)
+    : benchmark.benchmarkPricePence;
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 12, padding: 18, boxShadow: shadows.card, marginBottom: 18 }}>
@@ -732,6 +745,9 @@ export function PricingClient({
               </div>
               <div style={{ fontSize: 12, color: colors.muted }}>
                 Benchmark £{pounds(benchmark.benchmarkPricePence)} · {benchmark.distanceBandMinMiles}-{benchmark.distanceBandMaxMiles ?? "∞"} miles · {benchmark.packingIncluded ? "Packing" : "No packing"}
+              </div>
+              <div style={{ fontSize: 12, color: colors.muted }}>
+                {benchmarkKind(benchmark)} · customer preview £{pounds(benchmarkPreviewPence(benchmark))}
               </div>
               <div style={{ fontSize: 12, color: colors.muted }}>
                 From {new Date(benchmark.effectiveFrom).toLocaleDateString("en-GB")} · {benchmark.sourceNote}

@@ -45,6 +45,50 @@ function campaignRiskErrors(input: z.infer<typeof beatCompetitorCampaignSchema>)
   return errors;
 }
 
+function rangesOverlap(aMin: number, aMax: number | null, bMin: number, bMax: number | null) {
+  const aEnd = aMax ?? Number.POSITIVE_INFINITY;
+  const bEnd = bMax ?? Number.POSITIVE_INFINITY;
+  return aMin <= bEnd && bMin <= aEnd;
+}
+
+function dateRangesOverlap(aStart: Date, aEnd: Date | null, bStart: Date, bEnd: Date | null) {
+  const aStop = aEnd?.getTime() ?? Number.POSITIVE_INFINITY;
+  const bStop = bEnd?.getTime() ?? Number.POSITIVE_INFINITY;
+  return aStart.getTime() < bStop && bStart.getTime() < aStop;
+}
+
+function benchmarkDiagnostics(benchmarks: Awaited<ReturnType<typeof db.competitorBenchmark.findMany>>) {
+  const now = new Date();
+  const expiredBenchmarkIds = benchmarks
+    .filter((benchmark) => benchmark.active && benchmark.effectiveTo && benchmark.effectiveTo.getTime() <= now.getTime())
+    .map((benchmark) => benchmark.id);
+  const overlappingBenchmarkPairs: Array<{ firstId: string; secondId: string }> = [];
+
+  for (let firstIndex = 0; firstIndex < benchmarks.length; firstIndex += 1) {
+    const first = benchmarks[firstIndex]!;
+    if (!first.active) continue;
+    for (let secondIndex = firstIndex + 1; secondIndex < benchmarks.length; secondIndex += 1) {
+      const second = benchmarks[secondIndex]!;
+      if (!second.active) continue;
+      const sameClass =
+        first.region === second.region &&
+        first.moveType === second.moveType &&
+        first.propertySize === second.propertySize &&
+        first.serviceLevel === second.serviceLevel &&
+        first.packingIncluded === second.packingIncluded;
+      if (!sameClass) continue;
+      if (!rangesOverlap(first.distanceBandMinMiles, first.distanceBandMaxMiles, second.distanceBandMinMiles, second.distanceBandMaxMiles)) continue;
+      if (!dateRangesOverlap(first.effectiveFrom, first.effectiveTo, second.effectiveFrom, second.effectiveTo)) continue;
+      overlappingBenchmarkPairs.push({ firstId: first.id, secondId: second.id });
+    }
+  }
+
+  return {
+    expiredBenchmarkIds,
+    overlappingBenchmarkPairs,
+  };
+}
+
 export async function GET() {
   const session = await requireAdmin();
   if (!session) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -60,7 +104,11 @@ export async function GET() {
     }),
   ]);
 
-  return NextResponse.json({ benchmarks, beatCampaigns });
+  return NextResponse.json({
+    benchmarks,
+    beatCampaigns,
+    diagnostics: benchmarkDiagnostics(benchmarks),
+  });
 }
 
 export async function POST(req: NextRequest) {

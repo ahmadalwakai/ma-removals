@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getCompetitorPricingContext } from "@/lib/pricing/competitor-repository";
-import { calculateRemovalQuote } from "@/lib/pricing/domain";
+import { calculateRemovalQuote, normaliseQuoteInputForPricing } from "@/lib/pricing/domain";
 import {
   getCurrentPricingSettings,
   getCurrentVehicleClasses,
@@ -44,10 +44,15 @@ export async function POST(req: NextRequest) {
         input.delivery,
       ])).route;
 
+  const pricingInput = normaliseQuoteInputForPricing(input, inventory.items);
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
-  const competitorContext = await getCompetitorPricingContext(input, route?.distanceMiles ?? null);
+  const competitorContext = await getCompetitorPricingContext(
+    pricingInput,
+    route?.distanceMiles ?? null,
+    inventory.items,
+  );
   const result = calculateRemovalQuote({
-    input,
+    input: pricingInput,
     inventory: inventory.items,
     route,
     pricingVersion: {

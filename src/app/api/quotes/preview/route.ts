@@ -8,7 +8,6 @@ import {
   type RouteMetrics,
 } from "@/lib/pricing/domain";
 import type { CompetitorPricingContext } from "@/lib/pricing/competitor-benchmarks";
-import { packingChargePenceForMove } from "@/lib/pricing/packing";
 import type { PromotionPricingContext } from "@/lib/pricing/promotions";
 import { createQuoteRequestSchema, type AddressAccessInput } from "@/lib/quotes/schemas";
 
@@ -49,7 +48,7 @@ export type PreviewResult = {
   };
   breakdown?: Array<{ key: string; label: string; amountPence: number }>;
   manualReviewReasons: string[];
-  estimateSource?: "authoritative" | "fast";
+  estimateSource?: "authoritative";
 };
 
 type InventoryResolution = {
@@ -74,12 +73,12 @@ export interface PreviewDependencies {
   getPromotionPricingContext: (input: PreviewInput) => Promise<PromotionResolution>;
   getCompetitorPricingContext: (
     input: PreviewInput,
-    routeMileage: number | null
+    routeMileage: number | null,
+    inventory: ResolvedInventoryItem[]
   ) => Promise<CompetitorPricingContext>;
 }
 
 const AUTHORITATIVE_PREVIEW_TIMEOUT_MS = 3500;
-const CLIENT_ESTIMATED_VOLUME_PER_ITEM_M3 = 0.81;
 
 class PreviewTimeoutError extends Error {
   constructor() {
@@ -149,152 +148,21 @@ async function defaultPreviewDependencies(): Promise<PreviewDependencies> {
   };
 }
 
-function toRad(value: number) {
-  return value * Math.PI / 180;
-}
-
-function fallbackRouteMiles(input: PreviewInput) {
-  const stops = [
-    input.collection,
-    ...(input.additionalStop ? [input.additionalStop] : []),
-    input.delivery,
-  ];
-  let totalMiles = 0;
-  for (let index = 0; index < stops.length - 1; index += 1) {
-    const from = stops[index];
-    const to = stops[index + 1];
-    if (!from || !to) continue;
-    const dLat = toRad(to.lat - from.lat);
-    const dLng = toRad(to.lng - from.lng);
-    const lat1 = toRad(from.lat);
-    const lat2 = toRad(to.lat);
-    const a = Math.sin(dLat / 2) ** 2 +
-      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-    totalMiles += 3958.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
-  return Math.max(1, Math.round(totalMiles * 1.18 * 10) / 10);
-}
-
-function fallbackMoveBasePence(input: PreviewInput) {
-  const bySize: Record<string, number> = {
-    "single-item": 6500,
-    "few-items": 9500,
-    studio: 16000,
-    "1-bedroom": 23000,
-    "2-bedrooms": 32000,
-    "3-bedrooms": 46000,
-    "4-bedrooms": 62000,
-    "5-plus-bedrooms": 78000,
-    office: 45000,
-    "custom-inventory": 30000,
-  };
-  if (input.moveType === "piano-move") return 18000;
-  if (input.moveType === "office-move") return bySize.office ?? 45000;
-  if (input.moveType === "single-item-delivery") return bySize["single-item"] ?? 6500;
-  if (input.moveType === "furniture-delivery" || input.moveType === "marketplace-collection") {
-    return bySize["few-items"] ?? 9500;
-  }
-  return bySize[input.moveSize ?? "few-items"] ?? 24000;
-}
-
-function daysOut(input: PreviewInput, now: Date) {
-  if (!input.moveDate) return null;
-  const moveDate = new Date(`${input.moveDate}T12:00:00`);
-  if (Number.isNaN(moveDate.getTime())) return null;
-  const today = new Date(now);
-  today.setHours(12, 0, 0, 0);
-  return Math.round((moveDate.getTime() - today.getTime()) / 86_400_000);
-}
-
-function fallbackScheduleAdjustmentPence(input: PreviewInput, now: Date) {
-  const offset = daysOut(input, now);
-  if (offset == null) return 0;
-  if (offset <= 0 || input.sameDay) return 10000;
-  if (offset === 1) return 7700;
-  if (offset === 2 || input.urgent) return 5000;
-  const moveDate = new Date(`${input.moveDate}T12:00:00`);
-  const weekend = moveDate.getDay() === 0 || moveDate.getDay() === 6;
-  return weekend ? 3500 : 0;
-}
-
-function fallbackAccessPence(input: PreviewInput) {
-  const accessFor = (access: PreviewInput["collection"]) => {
-    const floorPenalty = access.floor > 0 && !access.hasLift ? access.floor * 900 : access.floor * 250;
-    const stairsPenalty = (access.internalStairs + access.externalStairs) * 250;
-    const carryPenalty = Math.ceil(access.carryDistanceMeters / 20) * 300;
-    const parkingPenalty = access.parking === "paid" || access.parking === "restricted" ? 1200 : 0;
-    return floorPenalty + stairsPenalty + carryPenalty + parkingPenalty;
-  };
-  return accessFor(input.collection) + accessFor(input.delivery) + (input.additionalStop ? Math.round(accessFor(input.additionalStop) * 0.5) : 0);
-}
-
-function fallbackPreview(input: PreviewInput, now: Date): PreviewResult {
-  const itemUnits = input.inventory.reduce((sum, item) => sum + item.quantity, 0) +
-    input.customItems.reduce((sum, item) => sum + item.quantity, 0);
-  const movers = input.preferredMovers ?? (itemUnits >= 18 || input.moveSize?.includes("bedroom") ? 2 : 1);
-  const routeMileage = fallbackRouteMiles(input);
-  const travelMinutes = Math.max(18, Math.round(routeMileage * 2.2));
-  const loadingMinutes = Math.max(35, itemUnits * 7 + fallbackAccessPence(input) / 220);
-  const unloadingMinutes = Math.max(25, Math.round(loadingMinutes * 0.72));
-  const itemHandlingPence = itemUnits * 425;
-  const customItemPence = input.customItems.length > 0 ? input.customItems.reduce((sum, item) => sum + item.quantity, 0) * 900 : 0;
-  const distancePence = Math.max(0, Math.round(routeMileage - 5)) * 155;
-  const labourPence = Math.max(0, movers - 1) * 4200;
-  const packingPence = input.services.packing
-    ? packingChargePenceForMove("full", input.moveSize, itemUnits)
-    : input.services.packingMaterials
-      ? packingChargePenceForMove("materials", input.moveSize, itemUnits)
-      : 0;
-  const servicesPence =
-    packingPence +
-    (input.services.dismantling ? 1000 * Number(input.services.dismantlingItems ?? 1) : 0) +
-    (input.services.reassembly ? 1000 * Number(input.services.reassemblyItems ?? 1) : 0) +
-    (input.services.furnitureProtection ? 9900 : 0);
-
-  const subtotal =
-    fallbackMoveBasePence(input) +
-    distancePence +
-    itemHandlingPence +
-    customItemPence +
-    labourPence +
-    servicesPence +
-    fallbackAccessPence(input) +
-    fallbackScheduleAdjustmentPence(input, now);
-  const totalPence = Math.max(5500, Math.ceil(subtotal / 500) * 500);
-
+function manualPreview(input: PreviewInput, reasons: string[]): PreviewResult {
   return {
     key: previewKey(input),
     date: input.moveDate ?? null,
     requestedMovers: input.preferredMovers ?? null,
-    status: "FIXED",
-    totalPence,
-    originalTotalPence: totalPence,
+    status: "MANUAL_REVIEW",
+    totalPence: null,
+    originalTotalPence: null,
     discountTotalPence: 0,
     promotionLabel: null,
-    routeMileage,
-    estimatedDurationMinutes: travelMinutes + Math.round((loadingMinutes + unloadingMinutes) / Math.max(movers, 1)),
-    vehicle: {
-      name: itemUnits >= 35 || routeMileage > 120 ? "Luton van" : "Transit van",
-      multipleVehiclesRequired: itemUnits >= 75,
-      multipleTripsLikely: itemUnits >= 65,
-    },
-    crew: {
-      movers,
-      loadingMinutes: Math.round(loadingMinutes),
-      unloadingMinutes: Math.round(unloadingMinutes),
-      travelMinutes,
-      totalJobMinutes: travelMinutes + Math.round((loadingMinutes + unloadingMinutes) / Math.max(movers, 1)),
-    },
-    inventory: {
-      totalVolumeM3: Math.round(itemUnits * CLIENT_ESTIMATED_VOLUME_PER_ITEM_M3 * 100) / 100,
-      totalWeightKg: itemUnits * 18,
-      itemUnits,
-      fragileItemCount: 0,
-      heavyOrSpecialItemCount: input.moveType === "piano-move" ? 1 : 0,
-    },
+    routeMileage: null,
+    estimatedDurationMinutes: null,
     breakdown: [],
-    manualReviewReasons: [],
-    estimateSource: "fast",
+    manualReviewReasons: reasons,
+    estimateSource: "authoritative",
   };
 }
 
@@ -338,7 +206,7 @@ export async function buildAuthoritativePreviews(
     const pricingInput = normaliseQuoteInputForPricing(input, inventoryResult.items);
     const [promotion, competitor] = await Promise.all([
       deps.getPromotionPricingContext(pricingInput),
-      deps.getCompetitorPricingContext(pricingInput, routeResult.route?.distanceMiles ?? null),
+      deps.getCompetitorPricingContext(pricingInput, routeResult.route?.distanceMiles ?? null, inventoryResult.items),
     ]);
 
     if (promotion.invalidPromotionCode) {
@@ -401,13 +269,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const now = new Date();
     if (isLocalPreviewRequest(req)) {
-      const previews = parsed.data.quotes.map((input) => fallbackPreview(input, now));
+      const previews = parsed.data.quotes.map((input) => manualPreview(input, [
+        "AUTHORITATIVE_ROUTE_UNAVAILABLE: Local preview cannot produce an automatic benchmark price without server-authoritative routing",
+      ]));
       return NextResponse.json({ previews }, {
         headers: {
           "Cache-Control": "no-store",
-          "X-Quote-Preview-Source": "fast-local",
+          "X-Quote-Preview-Source": "manual-local",
         },
       });
     }
@@ -424,13 +293,15 @@ export async function POST(req: NextRequest) {
       });
     } catch (error) {
       if (!(error instanceof PreviewTimeoutError)) {
-        console.warn("Authoritative quote preview failed; using fast estimate:", error);
+        console.warn("Authoritative quote preview failed; returning manual review previews:", error);
       }
-      const previews = parsed.data.quotes.map((input) => fallbackPreview(input, now));
+      const previews = parsed.data.quotes.map((input) => manualPreview(input, [
+        "MANUAL_REVIEW_REQUIRED: Authoritative benchmark preview was unavailable before timeout",
+      ]));
       return NextResponse.json({ previews }, {
         headers: {
           "Cache-Control": "no-store",
-          "X-Quote-Preview-Source": "fast",
+          "X-Quote-Preview-Source": "manual",
         },
       });
     }

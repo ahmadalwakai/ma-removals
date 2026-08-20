@@ -313,7 +313,7 @@ export const promotionCodeAdminSchema = z.object({
 export const competitorBenchmarkAdminSchema = z.object({
   region: z.string().trim().min(2).max(100),
   moveType: moveTypeSchema,
-  propertySize: moveSizeSchema,
+  propertySize: z.string().trim().min(2).max(160),
   serviceLevel: z.string().trim().min(2).max(80),
   packingIncluded: z.boolean().default(false),
   distanceBandMinMiles: z.number().finite().min(0).max(2000),

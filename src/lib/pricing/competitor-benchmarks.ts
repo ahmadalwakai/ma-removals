@@ -1,5 +1,15 @@
 import type { CreateQuoteRequest } from "@/lib/quotes/schemas";
 
+export type PricingIssueCode =
+  | "BENCHMARK_UNAVAILABLE"
+  | "BENCHMARK_EXPIRED"
+  | "BENCHMARK_AMBIGUOUS"
+  | "MANUAL_REVIEW_REQUIRED"
+  | "AUTHORITATIVE_ROUTE_UNAVAILABLE"
+  | "SAFETY_REVIEW_REQUIRED";
+
+export type PricingClassificationKind = "FULL_HOUSE" | "ITEM_LED" | "UNSUPPORTED";
+
 export interface CompetitorBenchmarkSnapshot {
   id: string;
   region: string;
@@ -43,22 +53,27 @@ export interface BeatCompetitorCampaignSnapshot {
   pausedAt: string | null;
 }
 
+export interface BenchmarkSelectionSnapshot {
+  classificationKind: PricingClassificationKind;
+  appliedFactor: 0.9 | 1;
+  serviceLevel: string;
+  packingIncluded: boolean;
+  requestedPropertySize: string | null;
+  effectivePropertySize: string | null;
+  benchmarkPropertySizes: string[];
+  matchingRegion: string | null;
+  distanceMiles: number | null;
+  missingBenchmarkDimensions: string[];
+  errorCode: PricingIssueCode | null;
+  errorMessage: string | null;
+}
+
 export interface CompetitorPricingContext {
   benchmark: CompetitorBenchmarkSnapshot | null;
   campaign: BeatCompetitorCampaignSnapshot | null;
   serviceLevel: string;
   packingIncluded: boolean;
-}
-
-export interface CompetitorEvaluationJob {
-  input: CreateQuoteRequest;
-  routeMileage: number | null;
-  normalOperationalPricePence: number;
-  minimumCustomerPricePence: number;
-  estimatedCostPence: number;
-  globalMinimumContributionPence: number;
-  globalMinimumMarginPercent: number | null;
-  now: Date;
+  selection: BenchmarkSelectionSnapshot;
 }
 
 export interface CompetitorEvaluationResult {
@@ -79,84 +94,38 @@ export interface CompetitorEvaluationResult {
   internalNotes: string[];
 }
 
-export const ANYVAN_MINIMUM_BEAT_PERCENTAGE = 0.1;
+export interface CompetitorEvaluationJob {
+  input: CreateQuoteRequest;
+  routeMileage: number | null;
+  normalOperationalPricePence: number;
+  minimumCustomerPricePence: number;
+  estimatedCostPence: number;
+  globalMinimumContributionPence: number;
+  globalMinimumMarginPercent: number | null;
+  now: Date;
+}
+
+export const ANYVAN_HOUSE_FACTOR = 0.9 as const;
+export const ANYVAN_ITEM_LED_FACTOR = 1 as const;
 
 export function isAnyVanCompetitorLabel(label: string): boolean {
   return label.replace(/[\s._-]+/g, "").toLowerCase().includes("anyvan");
 }
 
-function effectiveBeatPercentage(campaign: BeatCompetitorCampaignSnapshot): number {
-  return isAnyVanCompetitorLabel(campaign.competitorLabel)
-    ? Math.max(campaign.beatPercentage, ANYVAN_MINIMUM_BEAT_PERCENTAGE)
-    : campaign.beatPercentage;
+export function pricingIssueReason(code: PricingIssueCode, detail: string): string {
+  return `${code}: ${detail}`;
 }
 
-function dateActive(startsAt: string | null, endsAt: string | null, now: Date): boolean {
-  if (startsAt && new Date(startsAt).getTime() > now.getTime()) return false;
-  if (endsAt && new Date(endsAt).getTime() <= now.getTime()) return false;
-  return true;
-}
-
-function listMatches(allowed: string[], value: string | null | undefined): boolean {
-  if (allowed.length === 0) return true;
-  if (!value) return false;
-  return allowed.some((entry) => entry.toLowerCase() === value.toLowerCase());
-}
-
-function sameUtcDay(a: string | null, b: Date): boolean {
-  return a?.slice(0, 10) === b.toISOString().slice(0, 10);
-}
-
-function regionMatches(allowed: string[], input: CreateQuoteRequest): boolean {
-  if (allowed.length === 0) return true;
-  const candidates = [
-    input.collection.region,
-    input.delivery.region,
-    input.collection.city,
-    input.delivery.city,
-  ].filter((value): value is string => Boolean(value)).map((value) => value.toLowerCase());
-  return allowed.some((entry) => candidates.includes(entry.toLowerCase()));
-}
-
-function safeMinimumPrice(params: {
-  minimumCustomerPricePence: number;
-  estimatedCostPence: number;
-  globalMinimumContributionPence: number;
-  globalMinimumMarginPercent: number | null;
-  campaign: BeatCompetitorCampaignSnapshot;
-}): number {
-  const campaign = params.campaign;
-  const minimumPrice = Math.max(params.minimumCustomerPricePence, campaign.minimumPricePence ?? 0);
-  const minimumContribution = campaign.minimumContributionPence ?? params.globalMinimumContributionPence;
-  const minimumMargin = campaign.minimumMarginPercent ?? params.globalMinimumMarginPercent;
-  const negativeMarginAllowed = campaign.allowNegativeMargin && campaign.maximumPermittedLossPence != null;
-  let safe = minimumPrice;
-
-  if (negativeMarginAllowed) {
-    safe = Math.max(safe, params.estimatedCostPence - campaign.maximumPermittedLossPence!);
-    if (minimumContribution > 0) {
-      safe = Math.max(safe, params.estimatedCostPence + minimumContribution);
-    }
-  } else {
-    const contributionFloor = campaign.allowZeroMargin ? minimumContribution : Math.max(1, minimumContribution);
-    safe = Math.max(safe, params.estimatedCostPence + contributionFloor);
-  }
-
-  if (minimumMargin != null && minimumMargin < 1) {
-    safe = Math.max(safe, Math.ceil(params.estimatedCostPence / (1 - minimumMargin)));
-  }
-
-  return Math.max(0, Math.ceil(safe));
-}
-
-export function evaluateCompetitorBenchmark(
+function emptyEvaluation(
   job: CompetitorEvaluationJob,
-  context: CompetitorPricingContext | null | undefined
+  unableReason: string | null,
+  benchmarkId: string | null = null,
+  campaignId: string | null = null
 ): CompetitorEvaluationResult {
-  const empty: CompetitorEvaluationResult = {
+  return {
     applied: false,
-    benchmarkId: null,
-    campaignId: null,
+    benchmarkId,
+    campaignId,
     normalOperationalPricePence: job.normalOperationalPricePence,
     benchmarkPricePence: null,
     targetPricePence: null,
@@ -165,99 +134,45 @@ export function evaluateCompetitorBenchmark(
     discountPence: 0,
     savingAgainstBenchmarkPence: null,
     appliedRule: null,
-    unableReason: null,
+    unableReason,
     customerLabel: null,
     enforceExactTarget: false,
-    internalNotes: [],
+    internalNotes: unableReason ? [unableReason] : [],
   };
-  if (!context?.campaign) return { ...empty, unableReason: "Beat competitor mode is not configured" };
-  const campaign = context.campaign;
-  if (!campaign.enabled || campaign.pausedAt) return { ...empty, campaignId: campaign.id, unableReason: "Beat competitor mode is disabled or paused" };
-  if (!dateActive(campaign.startsAt, campaign.endsAt, job.now)) return { ...empty, campaignId: campaign.id, unableReason: "Beat competitor campaign is not active for this date" };
-  if (campaign.totalCampaignBookingLimit != null && campaign.bookingCount >= campaign.totalCampaignBookingLimit) {
-    return { ...empty, campaignId: campaign.id, unableReason: "Beat competitor total booking limit has been reached" };
-  }
-  const effectiveDailyBookingCount = sameUtcDay(campaign.dailyBookingDate, job.now) ? campaign.dailyBookingCount : 0;
-  if (campaign.dailyBookingLimit != null && effectiveDailyBookingCount >= campaign.dailyBookingLimit) {
-    return { ...empty, campaignId: campaign.id, unableReason: "Beat competitor daily booking limit has been reached" };
-  }
-  const anyVanCampaign = isAnyVanCompetitorLabel(campaign.competitorLabel);
-  if (!regionMatches(campaign.applicableRegions, job.input)) return { ...empty, campaignId: campaign.id, unableReason: "Beat competitor campaign does not apply to this region" };
-  if (!anyVanCampaign && !listMatches(campaign.applicableMoveTypes, job.input.moveType)) {
-    return { ...empty, campaignId: campaign.id, unableReason: "Beat competitor campaign does not apply to this move type" };
-  }
-  if (!anyVanCampaign && !listMatches(campaign.applicablePropertySizes, job.input.moveSize)) {
-    return { ...empty, campaignId: campaign.id, unableReason: "Beat competitor campaign does not apply to this property size" };
+}
+
+export function evaluateCompetitorBenchmark(
+  job: CompetitorEvaluationJob,
+  context: CompetitorPricingContext | null | undefined
+): CompetitorEvaluationResult {
+  if (!context?.benchmark) {
+    return emptyEvaluation(job, context?.selection.errorCode ?? "BENCHMARK_UNAVAILABLE");
   }
 
   const benchmark = context.benchmark;
-  if (!benchmark) return { ...empty, campaignId: campaign.id, unableReason: "No eligible competitor benchmark is configured" };
-  if (!benchmark.active || !dateActive(benchmark.effectiveFrom, benchmark.effectiveTo, job.now)) {
-    return { ...empty, benchmarkId: benchmark.id, campaignId: campaign.id, unableReason: "Competitor benchmark is inactive or expired" };
-  }
-  if (benchmark.moveType !== job.input.moveType) return { ...empty, benchmarkId: benchmark.id, campaignId: campaign.id, unableReason: "Competitor benchmark move type mismatch" };
-  if (benchmark.propertySize !== job.input.moveSize) return { ...empty, benchmarkId: benchmark.id, campaignId: campaign.id, unableReason: "Competitor benchmark property size mismatch" };
-  if (benchmark.packingIncluded !== context.packingIncluded) return { ...empty, benchmarkId: benchmark.id, campaignId: campaign.id, unableReason: "Competitor benchmark packing mode mismatch" };
-  if (job.routeMileage == null || job.routeMileage < benchmark.distanceBandMinMiles) {
-    return { ...empty, benchmarkId: benchmark.id, campaignId: campaign.id, unableReason: "Competitor benchmark distance band mismatch" };
-  }
-  if (benchmark.distanceBandMaxMiles != null && job.routeMileage > benchmark.distanceBandMaxMiles) {
-    return { ...empty, benchmarkId: benchmark.id, campaignId: campaign.id, unableReason: "Competitor benchmark distance band mismatch" };
-  }
-
-  const safeMinimum = safeMinimumPrice({
-    minimumCustomerPricePence: job.minimumCustomerPricePence,
-    estimatedCostPence: job.estimatedCostPence,
-    globalMinimumContributionPence: job.globalMinimumContributionPence,
-    globalMinimumMarginPercent: job.globalMinimumMarginPercent,
-    campaign,
-  });
-  const beatPercentage = effectiveBeatPercentage(campaign);
-  const percentageBeat = Math.ceil(benchmark.benchmarkPricePence * beatPercentage);
-  let target = Math.max(0, benchmark.benchmarkPricePence - percentageBeat - (campaign.beatFixedAmountPence ?? 0));
-  let maxDiscountLimited = false;
-  if (campaign.maximumDiscountPence != null && job.normalOperationalPricePence - target > campaign.maximumDiscountPence) {
-    target = job.normalOperationalPricePence - campaign.maximumDiscountPence;
-    maxDiscountLimited = true;
-  }
-  const finalPrice = Math.min(job.normalOperationalPricePence, Math.max(target, safeMinimum));
-  const discount = Math.max(0, job.normalOperationalPricePence - finalPrice);
-  const savingAgainstBenchmark = benchmark.benchmarkPricePence - finalPrice;
-  const unableReason = maxDiscountLimited
-    ? "Maximum discount cap limited the benchmark target"
-    : finalPrice >= benchmark.benchmarkPricePence
-      ? "Safe minimum price prevents beating the configured benchmark"
-      : null;
+  const factor = context.selection.appliedFactor;
+  const targetPricePence = Math.floor(benchmark.benchmarkPricePence * factor);
+  const discountPence = Math.max(0, benchmark.benchmarkPricePence - targetPricePence);
 
   return {
-    applied: discount > 0,
+    applied: true,
     benchmarkId: benchmark.id,
-    campaignId: campaign.id,
+    campaignId: context.campaign?.id ?? null,
     normalOperationalPricePence: job.normalOperationalPricePence,
     benchmarkPricePence: benchmark.benchmarkPricePence,
-    targetPricePence: target,
-    safeMinimumPricePence: safeMinimum,
-    finalPricePence: discount > 0 ? finalPrice : null,
-    discountPence: discount,
-    savingAgainstBenchmarkPence: savingAgainstBenchmark > 0 ? savingAgainstBenchmark : 0,
-    appliedRule: discount > 0 ? "beat_competitor" : null,
-    unableReason,
-    customerLabel: discount > 0 ? "Online booking price" : null,
-    enforceExactTarget: false,
+    targetPricePence,
+    safeMinimumPricePence: null,
+    finalPricePence: targetPricePence,
+    discountPence,
+    savingAgainstBenchmarkPence: discountPence,
+    appliedRule: factor === ANYVAN_HOUSE_FACTOR ? "anyvan_house_90_percent" : "anyvan_item_led_100_percent",
+    unableReason: null,
+    customerLabel: factor === ANYVAN_HOUSE_FACTOR ? "10% below AnyVan benchmark" : "AnyVan benchmark price",
+    enforceExactTarget: true,
     internalNotes: [
-      `Beat competitor campaign ${campaign.internalName} evaluated against ${campaign.competitorLabel}`,
-      ...(anyVanCampaign && campaign.beatPercentage < ANYVAN_MINIMUM_BEAT_PERCENTAGE
-        ? [`AnyVan minimum beat raised from ${Math.round(campaign.beatPercentage * 100)}% to 10%`]
-        : []),
-      ...(campaign.allowNegativeMargin && campaign.maximumPermittedLossPence == null
-        ? ["Negative-margin setting ignored because no maximum permitted loss is configured"]
-        : []),
-      ...(anyVanCampaign
-        ? ["AnyVan minimum beat applies across all move types and property sizes with standard margin and discount protections"]
-        : []),
-      `Benchmark ${benchmark.id} source note: ${benchmark.sourceNote}`,
-      ...(maxDiscountLimited ? ["Maximum discount cap reached"] : []),
-      ...(unableReason ? [unableReason] : []),
+      `Selected benchmark ${benchmark.id}`,
+      `Benchmark source note: ${benchmark.sourceNote}`,
+      `Applied factor ${factor.toFixed(2)}`,
     ],
   };
 }

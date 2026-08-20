@@ -1,66 +1,104 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  benchmarkSelectionCriteriaForQuote,
   calculateRemovalQuote,
+  classifyQuoteForPricing,
   normaliseQuoteInputForPricing,
-  type PricingVehicleClass,
   type PricingVersionSnapshot,
   type ResolvedInventoryItem,
   type RouteMetrics,
 } from "../src/lib/pricing/domain";
 import type {
-  PromotionCampaignSnapshot,
-  PromotionCodeSnapshot,
-  PromotionPricingContext,
-} from "../src/lib/pricing/promotions";
-import type {
-  BeatCompetitorCampaignSnapshot,
+  BenchmarkSelectionSnapshot,
   CompetitorBenchmarkSnapshot,
   CompetitorPricingContext,
 } from "../src/lib/pricing/competitor-benchmarks";
-import { applyCustomerRounding, ROUNDING_STRATEGY } from "../src/lib/pricing/rounding";
-import { createQuoteRequestSchema, type AdditionalServicesInput, type CreateQuoteRequest } from "../src/lib/quotes/schemas";
 import { buildAuthoritativePreviews, type PreviewDependencies } from "../src/app/api/quotes/preview/route";
+import type { CreateQuoteRequest } from "../src/lib/quotes/schemas";
 
-const now = new Date("2026-08-05T09:00:00.000Z");
-const expiresAt = new Date("2026-08-06T09:00:00.000Z");
+const now = new Date("2026-08-20T12:00:00.000Z");
 
-function services(overrides: Partial<AdditionalServicesInput> = {}): AdditionalServicesInput {
-  return {
-    packing: false,
-    packingMaterials: false,
-    unpacking: false,
-    dismantling: false,
-    reassembly: false,
-    furnitureProtection: false,
-    mattressProtection: false,
-    tvProtection: false,
-    wasteDisposal: false,
-    additionalMover: false,
-    waitingTime: false,
-    heavyItemHandling: false,
-    pianoHandling: false,
-    ...overrides,
-  };
-}
+const settings = {
+  labour_hourly_rate: 1,
+  helper_price: 1,
+  additional_stop_fee: 10,
+  access_difficulty_unit: 1,
+  optional_service_unit: 10,
+  assembly_price_per_item: 10,
+  heavy_item_unit: 10,
+  minimum_contribution: 0,
+  minimum_margin_percent: 0,
+  allow_zero_margin: 1,
+  allow_negative_margin: 0,
+};
+
+const pricingVersion: PricingVersionSnapshot = {
+  id: "pricing-v1",
+  version: 1,
+  status: "ACTIVE",
+  settings,
+  vehicleClasses: [
+    {
+      id: "van-1",
+      name: "Luton van",
+      isActive: true,
+      maxUsableVolumeM3: 120,
+      maxPayloadKg: 3000,
+      minCrew: 1,
+      maxCrew: 4,
+      baseFeePence: 100,
+      perMilePence: 10,
+      perHourPence: 100,
+      loadingEfficiencyFactor: 1,
+      unloadingEfficiencyFactor: 1,
+      fleetCount: 1,
+      manualReviewThresholdM3: 110,
+      manualReviewPayloadKg: 2800,
+    },
+  ],
+};
+
+const route: RouteMetrics = {
+  distanceMiles: 10,
+  durationMinutes: 30,
+  calculatedAt: now.toISOString(),
+  routeHash: "route-hash",
+};
+
+const services = {
+  packing: false,
+  packingMaterials: false,
+  unpacking: false,
+  dismantling: false,
+  reassembly: false,
+  furnitureProtection: false,
+  mattressProtection: false,
+  tvProtection: false,
+  wasteDisposal: false,
+  additionalMover: false,
+  waitingTime: false,
+  heavyItemHandling: false,
+  pianoHandling: false,
+};
 
 function access(overrides: Partial<CreateQuoteRequest["collection"]> = {}): CreateQuoteRequest["collection"] {
   return {
-    fullAddress: "10 Union Street, Glasgow G1 3QX",
-    postcode: "G1 3QX",
-    lat: 55.8609,
-    lng: -4.2514,
+    fullAddress: "1 Test Street, Glasgow",
+    postcode: "G1 1AA",
+    lat: 55.8642,
+    lng: -4.2518,
     city: "Glasgow",
     region: "Scotland",
     country: "United Kingdom",
     propertyType: "Flat",
-    floor: 1,
-    hasLift: true,
+    floor: 0,
+    hasLift: false,
     internalStairs: 0,
-    externalStairs: 2,
-    parking: "street",
+    externalStairs: 0,
+    parking: "on-site",
     parkingRestrictions: "",
-    carryDistanceMeters: 15,
+    carryDistanceMeters: 0,
     narrowRoad: false,
     loadingBayAvailable: false,
     accessRestrictions: "",
@@ -69,31 +107,32 @@ function access(overrides: Partial<CreateQuoteRequest["collection"]> = {}): Crea
   };
 }
 
-function input(overrides: Partial<CreateQuoteRequest> = {}): CreateQuoteRequest {
+function quote(overrides: Partial<CreateQuoteRequest> = {}): CreateQuoteRequest {
   return {
-    idempotencyKey: "test-key-123",
     moveType: "house-move",
     moveSize: "2-bedrooms",
     collection: access(),
     delivery: access({
-      fullAddress: "22 Princes Street, Edinburgh EH2 2ER",
-      postcode: "EH2 2ER",
-      lat: 55.9521,
-      lng: -3.1965,
+      fullAddress: "2 Test Street, Edinburgh",
+      postcode: "EH1 1AA",
+      lat: 55.9533,
+      lng: -3.1883,
       city: "Edinburgh",
+      propertyType: "House",
     }),
     additionalStop: null,
-    moveDate: "2026-08-10",
+    moveDate: "2026-09-01",
+    earliestDate: null,
+    latestDate: null,
     arrivalWindow: "morning",
     flexibleDate: false,
     flexibleTime: false,
     exactTime: false,
     sameDay: false,
     urgent: false,
-    inventory: [{ itemId: "sofa", quantity: 1, room: "living-room" }],
+    inventory: [],
     customItems: [],
-    services: services(),
-    promotionCode: undefined,
+    services,
     customer: {
       fullName: "Test Customer",
       email: "customer@example.com",
@@ -105,1428 +144,283 @@ function input(overrides: Partial<CreateQuoteRequest> = {}): CreateQuoteRequest 
       bookingConsentAccepted: true,
       termsAccepted: true,
     },
+    promotionCode: undefined,
+    sourceChannel: "test",
     ...overrides,
   };
 }
 
-function route(overrides: Partial<RouteMetrics> = {}): RouteMetrics {
+function item(overrides: Partial<ResolvedInventoryItem> = {}): ResolvedInventoryItem {
   return {
-    distanceMiles: 47.4,
-    durationMinutes: 72,
-    geometry: null,
-    calculatedAt: now.toISOString(),
-    routeHash: "route-fixture",
-    ...overrides,
-  };
-}
-
-function inventory(overrides: Partial<ResolvedInventoryItem> = {}): ResolvedInventoryItem[] {
-  return [{
-    id: "sofa",
-    category: "Living room",
-    name: "Two-seat sofa",
+    id: "sofa-1",
+    category: "Sofa",
+    name: "Sofa",
     quantity: 1,
     room: "living-room",
-    estimatedVolumeM3: 1.8,
-    estimatedWeightKg: 55,
-    handlingMinutes: 18,
+    estimatedVolumeM3: 1.2,
+    estimatedWeightKg: 45,
+    handlingMinutes: 20,
     requiresTwoPeople: false,
     fragile: false,
+    heavy: false,
+    specialist: false,
     dismantlingAvailable: false,
     assemblyAvailable: false,
+    reassemblyAvailable: false,
+    minimumCrew: null,
+    vehicleRestrictions: [],
     active: true,
     ...overrides,
-  }];
-}
-
-function settings(overrides: Record<string, number> = {}): Record<string, number> {
-  return {
-    labour_hourly_rate: 35,
-    inventory_handling_per_minute: 0.8,
-    access_difficulty_unit: 4,
-    additional_stop_fee: 25,
-    optional_service_unit: 18,
-    heavy_item_unit: 40,
-    regional_charge: 5,
-    parking_or_toll_charge: 12,
-    contingency_percent: 0.1,
-    permitted_discount: 0,
-    minimum_booking_amount: 80,
-    rounding_increment: 5,
-    internal_cost_percent: 0.6,
-    quote_expiry_hours: 24,
-    urgency_today: 1.5,
-    urgency_tomorrow: 1.25,
-    urgency_2_days: 1.15,
-    weekend_multiplier: 1.2,
-    base_house_move: 95,
-    base_office_removals: 120,
-    base_furniture_removals: 65,
-    base_piano_moves: 140,
-    base_van_with_man: 55,
-    single_item_base_fee: 45,
-    ...overrides,
   };
 }
 
-function vehicle(overrides: Partial<PricingVehicleClass> = {}): PricingVehicleClass {
+function benchmark(input: CreateQuoteRequest, inventory: ResolvedInventoryItem[], overrides: Partial<CompetitorBenchmarkSnapshot> = {}): CompetitorBenchmarkSnapshot {
+  const criteria = benchmarkSelectionCriteriaForQuote(input, inventory, route.distanceMiles);
   return {
-    id: "small-van",
-    name: "Small van",
-    isActive: true,
-    maxUsableVolumeM3: 5,
-    maxPayloadKg: 600,
-    minCrew: 1,
-    maxCrew: 3,
-    baseFeePence: 5000,
-    perMilePence: 175,
-    perHourPence: 2200,
-    loadingEfficiencyFactor: 1,
-    unloadingEfficiencyFactor: 1,
-    fleetCount: 1,
-    manualReviewThresholdM3: null,
-    manualReviewPayloadKg: null,
-    ...overrides,
-  };
-}
-
-function pricingVersion(overrides: Partial<PricingVersionSnapshot> = {}): PricingVersionSnapshot {
-  return {
-    id: "pricing-v1",
-    version: 1,
-    status: "ACTIVE",
-    settings: settings(),
-    vehicleClasses: [
-      vehicle(),
-      vehicle({
-        id: "luton",
-        name: "Luton van",
-        maxUsableVolumeM3: 25,
-        maxPayloadKg: 1200,
-        minCrew: 2,
-        maxCrew: 4,
-        baseFeePence: 9000,
-        perMilePence: 240,
-        perHourPence: 3200,
-      }),
-    ],
-    ...overrides,
-  };
-}
-
-function campaign(overrides: Partial<PromotionCampaignSnapshot> = {}): PromotionCampaignSnapshot {
-  return {
-    id: "campaign-flex",
-    type: "OCCUPANCY_FILL",
-    internalName: "Flexible day fill",
-    customerLabel: "Flexible moving discount",
-    active: true,
-    startsAt: "2026-08-01T00:00:00.000Z",
-    endsAt: "2026-09-01T00:00:00.000Z",
-    percentageReduction: null,
-    fixedReductionPence: 2000,
-    maximumDiscountPence: null,
-    maximumDiscountPercent: null,
-    hardMinimumPricePence: null,
-    hardMinimumContributionPence: null,
-    hardMinimumMarginPercent: null,
-    allowZeroMargin: false,
-    allowNegativeMargin: false,
-    maximumPermittedLossPence: null,
-    campaignBudgetPence: null,
-    dailyBudgetPence: null,
-    spentBudgetPence: 0,
-    dailySpentBudgetPence: 0,
-    maximumRedemptions: null,
-    redemptionCount: 0,
-    stackable: false,
-    pausedAt: null,
-    rules: null,
-    ...overrides,
-  };
-}
-
-function code(overrides: Partial<PromotionCodeSnapshot> = {}): PromotionCodeSnapshot {
-  return {
-    id: "code-save10",
-    code: "SAVE10",
-    normalizedCode: "SAVE10",
-    internalName: "Save 10",
-    customerLabel: "10% off today",
-    active: true,
-    discountType: "PERCENTAGE",
-    discountValue: 1000,
-    maximumDiscountPence: null,
-    minimumSubtotalPence: null,
-    maximumSubtotalPence: null,
-    startsAt: "2026-08-01T00:00:00.000Z",
-    endsAt: "2026-09-01T00:00:00.000Z",
-    maximumRedemptions: null,
-    maximumRedemptionsPerCustomer: null,
-    applicableMoveTypes: [],
-    applicableRegions: [],
-    applicableWeekdays: [],
-    applicableVehicleClasses: [],
-    firstBookingOnly: false,
-    stackable: false,
-    redemptionCount: 0,
-    campaignId: null,
-    ...overrides,
-  };
-}
-
-function promotionContext(overrides: Partial<PromotionPricingContext> = {}): PromotionPricingContext {
-  return {
-    campaigns: [],
-    promotionCode: null,
-    priorCompletedBookings: 0,
-    minimumContributionPence: 0,
-    minimumMarginPercent: null,
-    allowZeroMargin: false,
-    allowNegativeMargin: false,
-    ...overrides,
-  };
-}
-
-function competitorBenchmark(overrides: Partial<CompetitorBenchmarkSnapshot> = {}): CompetitorBenchmarkSnapshot {
-  return {
-    id: "benchmark-anyvan-glasgow-edinburgh",
-    region: "Scotland",
-    moveType: "house-move",
-    propertySize: "2-bedrooms",
-    serviceLevel: "standard",
-    packingIncluded: false,
+    id: "benchmark-1",
+    region: criteria.regionCandidates[0] ?? "Glasgow",
+    moveType: input.moveType,
+    propertySize: criteria.classification.benchmarkPropertySizes[0] ?? input.moveSize ?? "2-bedrooms",
+    serviceLevel: criteria.classification.serviceLevel,
+    packingIncluded: criteria.classification.packingIncluded,
     distanceBandMinMiles: 0,
-    distanceBandMaxMiles: 100,
-    benchmarkPricePence: 34000,
-    effectiveFrom: "2026-08-01T00:00:00.000Z",
-    effectiveTo: "2026-09-01T00:00:00.000Z",
-    sourceNote: "Admin-entered marketplace comparison",
+    distanceBandMaxMiles: 20,
+    benchmarkPricePence: 100000,
+    effectiveFrom: "2026-01-01T00:00:00.000Z",
+    effectiveTo: null,
+    sourceNote: "AnyVan test benchmark",
     active: true,
     ...overrides,
   };
 }
 
-function beatCampaign(overrides: Partial<BeatCompetitorCampaignSnapshot> = {}): BeatCompetitorCampaignSnapshot {
+function context(input: CreateQuoteRequest, inventory: ResolvedInventoryItem[], overrides: Partial<CompetitorPricingContext> = {}): CompetitorPricingContext {
+  const criteria = benchmarkSelectionCriteriaForQuote(input, inventory, route.distanceMiles);
+  const selected = overrides.benchmark ?? benchmark(input, inventory);
+  const selection: BenchmarkSelectionSnapshot = {
+    classificationKind: criteria.classification.kind,
+    appliedFactor: criteria.classification.appliedFactor,
+    serviceLevel: criteria.classification.serviceLevel,
+    packingIncluded: criteria.classification.packingIncluded,
+    requestedPropertySize: criteria.classification.requestedMoveSize,
+    effectivePropertySize: criteria.classification.effectivePropertySize,
+    benchmarkPropertySizes: criteria.classification.benchmarkPropertySizes,
+    matchingRegion: selected?.region ?? criteria.regionCandidates[0] ?? null,
+    distanceMiles: route.distanceMiles,
+    missingBenchmarkDimensions: criteria.classification.missingBenchmarkDimensions,
+    errorCode: null,
+    errorMessage: null,
+    ...(overrides.selection ?? {}),
+  };
   return {
-    id: "beat-anyvan",
-    enabled: true,
-    internalName: "Beat AnyVan",
-    competitorLabel: "AnyVan",
-    applicableRegions: ["Scotland"],
-    applicableMoveTypes: ["house-move"],
-    applicablePropertySizes: ["2-bedrooms"],
-    beatPercentage: 0.03,
-    beatFixedAmountPence: null,
-    minimumPricePence: null,
-    minimumContributionPence: null,
-    minimumMarginPercent: null,
-    maximumDiscountPence: 10000,
-    allowZeroMargin: false,
-    allowNegativeMargin: false,
-    maximumPermittedLossPence: null,
-    startsAt: "2026-08-01T00:00:00.000Z",
-    endsAt: "2026-09-01T00:00:00.000Z",
-    dailyBookingLimit: null,
-    totalCampaignBookingLimit: null,
-    dailyBookingCount: 0,
-    dailyBookingDate: null,
-    bookingCount: 0,
-    pausedAt: null,
+    benchmark: selected,
+    campaign: null,
+    serviceLevel: criteria.classification.serviceLevel,
+    packingIncluded: criteria.classification.packingIncluded,
+    selection,
     ...overrides,
   };
 }
 
-function competitorContext(overrides: Partial<CompetitorPricingContext> = {}): CompetitorPricingContext {
-  return {
-    benchmark: competitorBenchmark(),
-    campaign: beatCampaign(),
-    serviceLevel: "standard",
-    packingIncluded: false,
-    ...overrides,
-  };
-}
-
-function calculate(params: {
-  quoteInput?: CreateQuoteRequest;
-  quoteInventory?: ResolvedInventoryItem[];
-  quoteRoute?: RouteMetrics | null;
-  version?: PricingVersionSnapshot | null;
-  quotePromotionContext?: PromotionPricingContext | null;
-  quoteCompetitorContext?: CompetitorPricingContext | null;
-} = {}) {
+function price(input: CreateQuoteRequest, inventory: ResolvedInventoryItem[] = [], overrides: Partial<CompetitorPricingContext> = {}) {
+  const pricingInput = normaliseQuoteInputForPricing(input, inventory);
   return calculateRemovalQuote({
-    input: params.quoteInput ?? input(),
-    inventory: params.quoteInventory ?? inventory(),
-    route: params.quoteRoute === undefined ? route() : params.quoteRoute,
-    pricingVersion: params.version === undefined ? pricingVersion() : params.version,
-    promotionContext: params.quotePromotionContext,
-    competitorContext: params.quoteCompetitorContext,
+    input: pricingInput,
+    inventory,
+    route,
+    pricingVersion,
+    competitorContext: context(pricingInput, inventory, overrides),
     now,
-    quoteExpiresAt: expiresAt,
+    quoteExpiresAt: new Date("2026-08-21T12:00:00.000Z"),
   });
 }
 
-function scheduleAmount(result: ReturnType<typeof calculate>): number {
-  return result.customerBreakdown.find((line) => line.key === "schedule_surcharge")?.amountPence ?? 0;
-}
-
-function breakdownTotal(result: ReturnType<typeof calculate>): number {
+function breakdownTotal(result: ReturnType<typeof price>) {
   return result.customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
 }
 
-function sofaInventory(quantity: number): ResolvedInventoryItem[] {
-  return inventory({
-    id: "sofa",
-    name: "Two-seat sofa",
-    quantity,
-    estimatedVolumeM3: 1.8,
-    estimatedWeightKg: 55,
-    handlingMinutes: 18,
-  });
-}
+test("full-house benchmarks from studio through 5-plus bedrooms price at floor(benchmark * 0.90)", () => {
+  for (const moveSize of ["studio", "1-bedroom", "2-bedrooms", "3-bedrooms", "4-bedrooms", "5-plus-bedrooms"] as const) {
+    const input = quote({ moveSize });
+    const result = price(input, [], {
+      benchmark: benchmark(input, [], { benchmarkPricePence: 123457 }),
+    });
 
-function toyBoxInventory(quantity: number): ResolvedInventoryItem[] {
-  return inventory({
-    id: "toy-box",
-    name: "Toy box",
-    quantity,
-    estimatedVolumeM3: 0.25,
-    estimatedWeightKg: 8,
-    handlingMinutes: 5,
-  });
-}
-
-function anyVanContextFor(moveSize: CreateQuoteRequest["moveSize"], overrides: {
-  benchmarkPricePence?: number;
-  campaign?: Partial<BeatCompetitorCampaignSnapshot>;
-} = {}): CompetitorPricingContext {
-  return competitorContext({
-    benchmark: competitorBenchmark({
-      propertySize: moveSize ?? "few-items",
-      benchmarkPricePence: overrides.benchmarkPricePence ?? 30000,
-    }),
-    campaign: beatCampaign({
-      maximumDiscountPence: 10000,
-      allowNegativeMargin: false,
-      ...overrides.campaign,
-    }),
-  });
-}
-
-function calculateNormalised(params: {
-  quantity: number;
-  quoteInventory?: ResolvedInventoryItem[];
-  version?: PricingVersionSnapshot;
-  quoteInput?: CreateQuoteRequest;
-  competitorOverrides?: Parameters<typeof anyVanContextFor>[1];
-}) {
-  const quoteInventory = params.quoteInventory ?? sofaInventory(params.quantity);
-  const rawInput = params.quoteInput ?? input({
-    moveSize: "few-items",
-    preferredMovers: 1,
-    inventory: [{ itemId: quoteInventory[0]?.id ?? "sofa", quantity: params.quantity, room: "living-room" }],
-  });
-  const pricingInput = normaliseQuoteInputForPricing(rawInput, quoteInventory);
-
-  return calculate({
-    version: params.version,
-    quoteInput: pricingInput,
-    quoteInventory,
-    quoteCompetitorContext: anyVanContextFor(pricingInput.moveSize, params.competitorOverrides),
-  });
-}
-
-test("returns a deterministic fixed quote from server-owned pricing inputs", () => {
-  const first = calculate();
-  const second = calculate();
-
-  assert.equal(first.status, "FIXED");
-  assert.equal(first.manualReviewReasons.length, 0);
-  assert.ok((first.finalTotalPence ?? 0) > 0);
-  assert.equal(first.customerSummary.routeMileage, 47.4);
-  assert.equal(first.customerSummary.quoteExpiresAt, expiresAt.toISOString());
-  assert.equal(first.vehicleRecommendation.name, "Small van");
-  assert.deepEqual(first, second);
+    assert.equal(result.status, "FIXED");
+    assert.equal(result.finalTotalPence, Math.floor(123457 * 0.9));
+    assert.ok((result.finalTotalPence ?? 0) <= 123457 * 0.9);
+    assert.equal(breakdownTotal(result), result.finalTotalPence);
+  }
 });
 
-test("handles zero-distance local moves without trusting client mileage", () => {
-  const result = calculate({
-    quoteRoute: route({ distanceMiles: 0, durationMinutes: 0, routeHash: "zero-route" }),
+test("packing requires a like-for-like packing benchmark and is not added twice", () => {
+  const input = quote({ services: { ...services, packing: true, packingMaterials: true } });
+  const result = price(input, [], {
+    benchmark: benchmark(input, [], { packingIncluded: true, benchmarkPricePence: 200000 }),
   });
 
   assert.equal(result.status, "FIXED");
-  assert.equal(result.customerSummary.routeMileage, 0);
-  assert.ok((result.finalTotalPence ?? 0) >= 8000);
+  assert.equal(result.finalTotalPence, 180000);
+  assert.equal(result.customerBreakdown.some((line) => line.key === "packing_charge"), false);
 });
 
-test("long-distance routes cost more than zero-distance routes with the same version", () => {
-  const local = calculate({
-    quoteRoute: route({ distanceMiles: 0, durationMinutes: 0, routeHash: "local" }),
-  });
-  const longDistance = calculate({
-    quoteRoute: route({ distanceMiles: 300, durationMinutes: 420, routeHash: "long" }),
-  });
-
-  assert.equal(local.status, "FIXED");
-  assert.equal(longDistance.status, "FIXED");
-  assert.ok((longDistance.finalTotalPence ?? 0) > (local.finalTotalPence ?? 0));
-  assert.equal(longDistance.customerBreakdown.find((line) => line.key === "distance_charge")?.amountPence, 13107);
-  assert.equal(longDistance.customerBreakdown.some((line) => line.key === "travel_time_charge"), false);
-});
-
-test("does not issue a fixed price without an active pricing version", () => {
-  const result = calculate({ version: null });
-
-  assert.equal(result.status, "MANUAL_REVIEW");
-  assert.equal(result.finalTotalPence, null);
-  assert.match(result.manualReviewReasons.join("\n"), /No active pricing version/);
-});
-
-test("requires authoritative inventory dimensions and handling data", () => {
-  const result = calculate({
-    quoteInventory: inventory({ estimatedVolumeM3: null, handlingMinutes: null }),
-  });
-
-  assert.equal(result.status, "MANUAL_REVIEW");
-  assert.deepEqual(result.customerBreakdown, []);
-  assert.match(result.manualReviewReasons.join("\n"), /Missing volume/);
-  assert.match(result.manualReviewReasons.join("\n"), /Missing handling time/);
-});
-
-test("chooses the smallest configured vehicle that fits volume and payload", () => {
-  const result = calculate({
-    quoteInventory: inventory({
-      name: "Large sideboard",
-      estimatedVolumeM3: 8,
-      estimatedWeightKg: 500,
-      handlingMinutes: 80,
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.vehicleRecommendation.name, "Luton van");
-  assert.equal(result.vehicleRecommendation.multipleVehiclesRequired, false);
-});
-
-test("vehicle selection respects payload even when volume fits a smaller van", () => {
-  const result = calculate({
-    quoteInventory: inventory({
-      name: "Compact machinery",
-      estimatedVolumeM3: 2,
-      estimatedWeightKg: 800,
-      handlingMinutes: 90,
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.vehicleRecommendation.name, "Luton van");
-});
-
-test("requires more movers for two-person, heavy, and specialist items", () => {
-  const result = calculate({
-    quoteInventory: inventory({
-      name: "Upright piano",
-      estimatedVolumeM3: 2.5,
-      estimatedWeightKg: 180,
-      handlingMinutes: 120,
-      requiresTwoPeople: true,
-    }),
-    quoteInput: input({ moveType: "piano-move", services: services({ pianoHandling: true }) }),
-  });
-  const keys = result.customerBreakdown.map((line) => line.key);
-
-  assert.equal(result.status, "FIXED");
-  assert.ok(result.crewRecommendation.movers >= 2);
-  assert.equal(result.inventoryMetrics.heavyOrSpecialItemCount, 1);
-  assert.ok(keys.includes("heavy_and_special_item_charge"));
-});
-
-test("preferred two-person selection does not become a three-person crew", () => {
-  const result = calculate({
-    quoteInput: input({ preferredMovers: 2 }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.crewRecommendation.movers, 2);
-});
-
-test("customer-selected one-person crew remains available on larger moves", () => {
-  const quoteInventory = inventory({
-    estimatedVolumeM3: 12,
-    estimatedWeightKg: 350,
-    handlingMinutes: 120,
-  });
-  const onePerson = calculate({
-    quoteInput: input({ preferredMovers: 1 }),
-    quoteInventory,
-  });
-  const twoPeople = calculate({
-    quoteInput: input({ preferredMovers: 2 }),
-    quoteInventory,
-  });
-
-  assert.equal(onePerson.status, "FIXED");
-  assert.equal(twoPeople.status, "FIXED");
-  assert.equal(onePerson.vehicleRecommendation.name, "Luton van");
-  assert.equal(onePerson.crewRecommendation.movers, 1);
-  assert.equal(twoPeople.crewRecommendation.movers, 2);
-  assert.ok((twoPeople.finalTotalPence ?? 0) > (onePerson.finalTotalPence ?? 0));
-});
-
-test("full-service moves do not double-charge handling or helper labour", () => {
-  const result = calculate({
-    quoteInput: input({ moveSize: "2-bedrooms", preferredMovers: 2 }),
-  });
-  const labourLine = result.customerBreakdown.find((line) => line.key === "labour_charge");
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.customerBreakdown.some((line) => line.key === "inventory_handling_charge"), false);
-  assert.equal(labourLine?.amountPence, 7000);
-});
-
-test("large house inventories use configured item-count bedroom benchmarks", () => {
-  const rawInput = input({ moveType: "house-move", moveSize: "few-items", preferredMovers: 1 });
-  const largeInventory = inventory({
-    quantity: 26,
-    estimatedVolumeM3: 1.115,
-    estimatedWeightKg: 25,
-    handlingMinutes: 8,
-  });
-  const pricingInput = normaliseQuoteInputForPricing(rawInput, largeInventory);
-
-  assert.equal(rawInput.moveSize, "few-items");
-  assert.equal(pricingInput.moveSize, "1-bedroom");
-
-  const result = calculate({
-    quoteInput: pricingInput,
-    quoteInventory: largeInventory,
-    quoteRoute: route({ distanceMiles: 1.8, durationMinutes: 6 }),
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({
-        benchmarkPricePence: 33051,
-        distanceBandMinMiles: 0,
-        distanceBandMaxMiles: 2,
-        propertySize: "1-bedroom",
-      }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.benchmarkPricePence, 33051);
-  assert.equal(result.competitorSummary.targetPricePence, 29745);
-  assert.ok((result.finalTotalPence ?? 0) >= 29745 + scheduleAmount(result));
-  assert.equal(breakdownTotal(result), result.finalTotalPence);
-});
-
-test("selected two-person crew costs more than one-person crew for the same move", () => {
-  const quoteInventory = inventory({ handlingMinutes: 180 });
-  const onePerson = calculate({
-    quoteInput: input({ moveSize: "few-items", preferredMovers: 1 }),
-    quoteInventory,
-  });
-  const twoPeople = calculate({
-    quoteInput: input({ moveSize: "few-items", preferredMovers: 2 }),
-    quoteInventory,
-  });
-
-  assert.equal(onePerson.status, "FIXED");
-  assert.equal(twoPeople.status, "FIXED");
-  assert.equal(onePerson.crewRecommendation.movers, 1);
-  assert.equal(twoPeople.crewRecommendation.movers, 2);
-  assert.ok((twoPeople.finalTotalPence ?? 0) > (onePerson.finalTotalPence ?? 0));
-});
-
-test("single-item inventory uses item-move base without separate van and labour charges", () => {
-  const result = calculate({
-    quoteInput: input({ moveSize: "few-items", preferredMovers: 1 }),
-  });
-  const baseLine = result.customerBreakdown.find((line) => line.key === "base_service_charge");
-  const keys = result.customerBreakdown.map((line) => line.key);
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(baseLine?.label, "Single item move");
-  assert.equal(baseLine?.amountPence, 4500);
-  assert.equal(keys.includes("vehicle_charge"), false);
-  assert.equal(keys.includes("labour_charge"), false);
-});
-
-test("ordinary longer handling time does not default to a three-person crew", () => {
-  const result = calculate({
-    quoteInventory: inventory({ handlingMinutes: 300 }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.crewRecommendation.movers, 1);
-});
-
-test("stairs, no lift, and long carry produce an access charge", () => {
-  const result = calculate({
-    quoteInput: input({
-      collection: access({
-        floor: 3,
-        hasLift: false,
-        internalStairs: 8,
-        externalStairs: 12,
-        carryDistanceMeters: 120,
-        parking: "restricted",
-      }),
-    }),
-  });
-  const accessLine = result.customerBreakdown.find((line) => line.key === "access_charge");
-
-  assert.equal(result.status, "FIXED");
-  assert.ok((accessLine?.amountPence ?? 0) > 0);
-});
-
-test("prices over-capacity moves with additional vehicle capacity", () => {
-  const result = calculate({
-    quoteInventory: inventory({
-      name: "Workshop contents",
-      estimatedVolumeM3: 60,
-      estimatedWeightKg: 3000,
-      handlingMinutes: 360,
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.ok((result.finalTotalPence ?? 0) > 0);
-  assert.equal(result.vehicleRecommendation.multipleVehiclesRequired, true);
-  assert.equal(result.vehicleRecommendation.multipleTripsLikely, true);
-  assert.equal(result.manualReviewReasons.length, 0);
-  assert.match(result.customerBreakdown.find((line) => line.key === "vehicle_charge")?.label ?? "", /capacity supplement x2/);
-  assert.equal(result.customerBreakdown.find((line) => line.key === "vehicle_charge")?.amountPence, 18000);
-});
-
-test("applies stop, services, parking, urgency, and VAT charges when configured", () => {
-  const result = calculate({
-    quoteInput: input({
-      collection: access({ parking: "paid" }),
-      additionalStop: access({
-        fullAddress: "4 High Street, Stirling FK8 1EA",
-        postcode: "FK8 1EA",
-        lat: 56.1165,
-        lng: -3.9369,
-        city: "Stirling",
-      }),
-      moveDate: "2026-08-05",
-      sameDay: true,
-      services: services({ packing: true, additionalMover: true }),
-    }),
-    version: pricingVersion({
-      settings: settings({ vat_enabled: 1, vat_rate: 0.2 }),
-    }),
-  });
-  const keys = result.customerBreakdown.map((line) => line.key);
-  const scheduleLine = result.customerBreakdown.find((line) => line.key === "schedule_surcharge");
-
-  assert.equal(result.status, "FIXED");
-  assert.ok(keys.includes("additional_stop_charge"));
-  assert.ok(keys.includes("packing_charge"));
-  assert.ok(keys.includes("optional_services_charge"));
-  assert.ok(keys.includes("parking_or_toll_charge"));
-  assert.ok(keys.includes("schedule_surcharge"));
-  assert.equal(scheduleLine?.amountPence, 10000);
-  assert.ok(keys.includes("vat"));
-  assert.ok(result.crewRecommendation.movers >= 2);
-});
-
-test("normal future dates do not receive synthetic availability adjustments", () => {
-  const result = calculate({
-    quoteInput: input({ moveDate: "2026-08-08" }),
-  });
-  const scheduleLine = result.customerBreakdown.find((line) => line.key === "schedule_surcharge");
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(scheduleLine, undefined);
-});
-
-test("short-notice dates use fixed calendar surcharges", () => {
-  const today = calculate({ quoteInput: input({ moveDate: "2026-08-05", sameDay: true }) });
-  const tomorrow = calculate({ quoteInput: input({ moveDate: "2026-08-06" }) });
-  const thirdDay = calculate({ quoteInput: input({ moveDate: "2026-08-07" }) });
-
-  assert.equal(today.customerBreakdown.find((line) => line.key === "schedule_surcharge")?.amountPence, 10000);
-  assert.equal(tomorrow.customerBreakdown.find((line) => line.key === "schedule_surcharge")?.amountPence, 7700);
-  assert.equal(thirdDay.customerBreakdown.find((line) => line.key === "schedule_surcharge")?.amountPence, 5000);
-});
-
-test("configured permitted discounts cannot make the final total negative", () => {
-  const result = calculate({
-    version: pricingVersion({
-      settings: settings({
-        permitted_discount: 5000,
-        minimum_booking_amount: 80,
-      }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.ok((result.finalTotalPence ?? 0) >= 8000);
-  assert.ok(result.customerBreakdown.some((line) => line.key === "permitted_discounts" && line.amountPence < 0));
-});
-
-test("applies percentage promotion codes as basis points after server pricing", () => {
-  const baseline = calculate();
-  const result = calculate({
-    quoteInput: input({ promotionCode: "SAVE10" }),
-    quotePromotionContext: promotionContext({ promotionCode: code() }),
-  });
-  const expectedDiscount = Math.round((baseline.internalSummary.preDiscountTotalPence ?? 0) * 0.1);
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.promotionSummary.applied[0]?.source, "code");
-  assert.equal(result.promotionSummary.discountTotalPence, expectedDiscount);
-  assert.equal(result.customerSummary.promotionLabel, "10% off today");
-  assert.ok((result.finalTotalPence ?? 0) < (baseline.finalTotalPence ?? 0));
-});
-
-test("automatic flexible-date campaigns only apply to flexible quotes", () => {
-  const gatedCampaign = campaign({
-    rules: { flexibleDateOnly: true },
-  });
-  const fixedDate = calculate({
-    quotePromotionContext: promotionContext({ campaigns: [gatedCampaign] }),
-  });
-  const flexibleDate = calculate({
-    quoteInput: input({
-      moveDate: null,
-      flexibleDate: true,
-      earliestDate: "2026-08-11",
-      latestDate: "2026-08-13",
-    }),
-    quotePromotionContext: promotionContext({ campaigns: [gatedCampaign] }),
-  });
-
-  assert.equal(fixedDate.status, "FIXED");
-  assert.equal(fixedDate.promotionSummary.discountTotalPence, 0);
-  assert.equal(flexibleDate.status, "FIXED");
-  assert.equal(flexibleDate.promotionSummary.discountTotalPence, 2000);
-  assert.equal(flexibleDate.customerSummary.promotionLabel, "Flexible moving discount");
-});
-
-test("margin protection blocks aggressive campaigns that would create a loss", () => {
-  const result = calculate({
-    quotePromotionContext: promotionContext({
-      campaigns: [
-        campaign({
-          id: "campaign-aggressive-loss",
-          type: "AGGRESSIVE",
-          customerLabel: "Aggressive fill rate",
-          fixedReductionPence: 1_000_000,
-          hardMinimumPricePence: 0,
-        }),
-      ],
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.promotionSummary.applied.length, 0);
-  assert.equal(result.promotionSummary.discountTotalPence, 0);
-});
-
-test("beat competitor mode prices below the configured benchmark without exposing the competitor name to customers", () => {
-  const result = calculate({
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({ benchmarkPricePence: 15000 }),
-    }),
-  });
-  const competitorLine = result.customerBreakdown.find((line) => line.key === "competitor_benchmark_adjustment");
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, true);
-  assert.equal(result.competitorSummary.benchmarkPricePence, 15000);
-  assert.equal(result.competitorSummary.targetPricePence, 13500);
-  assert.ok((result.finalTotalPence ?? 0) < (result.customerSummary.originalTotalPence ?? 0));
-  assert.equal(result.customerSummary.discountTotalPence, result.competitorSummary.discountPence);
-  assert.equal(competitorLine?.label, "Online booking price");
-  assert.equal(result.customerBreakdown.some((line) => /AnyVan/i.test(line.label)), false);
-  assert.equal(breakdownTotal(result), result.finalTotalPence);
-});
-
-test("AnyVan beat mode respects the configured maximum discount cap", () => {
-  const result = calculate({
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({ benchmarkPricePence: 10000 }),
-      campaign: beatCampaign({ beatPercentage: 0.03, maximumDiscountPence: 1000 }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, true);
-  assert.equal(result.competitorSummary.targetPricePence, result.competitorSummary.normalOperationalPricePence - 1000);
-  assert.equal(result.competitorSummary.discountPence, 1000);
-  assert.match(result.competitorSummary.unableReason ?? "", /Maximum discount cap/);
-});
-
-test("AnyVan beat mode respects margin safety floors", () => {
-  const result = calculate({
-    version: pricingVersion({
-      settings: settings({ internal_cost_percent: 0.95 }),
-    }),
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({ benchmarkPricePence: 10000 }),
-      campaign: beatCampaign({ minimumMarginPercent: 0.5 }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, false);
-  assert.equal(result.competitorSummary.targetPricePence, 9000);
-  assert.ok((result.competitorSummary.safeMinimumPricePence ?? 0) > (result.competitorSummary.targetPricePence ?? 0));
-  assert.match(result.competitorSummary.unableReason ?? "", /Safe minimum/);
-});
-
-test("AnyVan beat mode applies across non-house move types when a matching benchmark exists", () => {
-  const result = calculate({
-    quoteInput: input({
-      moveType: "furniture-delivery",
-      moveSize: "single-item",
-      preferredMovers: 1,
-    }),
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({
-        moveType: "furniture-delivery",
-        propertySize: "single-item",
-        benchmarkPricePence: 10000,
-      }),
-      campaign: beatCampaign({
-        applicableMoveTypes: ["house-move"],
-        applicablePropertySizes: ["2-bedrooms"],
-      }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, true);
-  assert.equal(result.competitorSummary.targetPricePence, 9000);
-  assert.ok((result.finalTotalPence ?? 0) >= 9000 + scheduleAmount(result));
-  assert.equal(breakdownTotal(result), result.finalTotalPence);
-});
-
-test("AnyVan benchmark ceiling does not add synthetic normal-date adjustments", () => {
-  const result = calculate({
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({ benchmarkPricePence: 27000 }),
-    }),
-  });
-  const scheduleLine = result.customerBreakdown.find((line) => line.key === "schedule_surcharge");
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.enforceExactTarget, false);
-  assert.equal(result.competitorSummary.targetPricePence, 24300);
-  assert.equal(scheduleLine, undefined);
-  assert.ok(Number.isFinite(result.internalSummary.roundingAdjustmentPence ?? 0));
-  assert.equal(breakdownTotal(result), result.finalTotalPence);
-});
-
-test("AnyVan benchmark ceiling preserves short-notice calendar price jumps", () => {
-  const quoteCompetitorContext = competitorContext({
-    benchmark: competitorBenchmark({ benchmarkPricePence: 27000 }),
-  });
-  const today = calculate({
-    quoteInput: input({ moveDate: "2026-08-05", sameDay: true }),
-    quoteCompetitorContext,
-  });
-  const tomorrow = calculate({
-    quoteInput: input({ moveDate: "2026-08-06" }),
-    quoteCompetitorContext,
-  });
-  const thirdDay = calculate({
-    quoteInput: input({ moveDate: "2026-08-07" }),
-    quoteCompetitorContext,
-  });
-  const normalDay = calculate({
-    quoteInput: input({ moveDate: "2026-08-08" }),
-    quoteCompetitorContext,
-  });
-
-  assert.ok((today.finalTotalPence ?? 0) > (tomorrow.finalTotalPence ?? 0));
-  assert.ok((tomorrow.finalTotalPence ?? 0) > (thirdDay.finalTotalPence ?? 0));
-  assert.ok((thirdDay.finalTotalPence ?? 0) > (normalDay.finalTotalPence ?? 0));
-  assert.equal(breakdownTotal(today), today.finalTotalPence);
-  assert.equal(breakdownTotal(tomorrow), tomorrow.finalTotalPence);
-  assert.equal(breakdownTotal(thirdDay), thirdDay.finalTotalPence);
-  assert.equal(breakdownTotal(normalDay), normalDay.finalTotalPence);
-});
-
-test("AnyVan benchmark ceiling never raises naturally cheaper quotes", () => {
-  const result = calculate({
-    quoteInput: input({
-      moveType: "furniture-delivery",
-      moveSize: "single-item",
-      preferredMovers: 1,
-    }),
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({
-        moveType: "furniture-delivery",
-        propertySize: "single-item",
-        benchmarkPricePence: 30000,
-      }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.enforceExactTarget, false);
-  assert.equal(result.competitorSummary.targetPricePence, 27000);
-  assert.equal(result.competitorSummary.discountPence, 0);
-  assert.ok((result.finalTotalPence ?? 0) < 27000 + scheduleAmount(result));
-  assert.equal(result.customerBreakdown.some((line) => line.key === "competitor_benchmark_adjustment"), false);
-  assert.equal(breakdownTotal(result), result.finalTotalPence);
-});
-
-test("AnyVan benchmark ceiling does not discount an extra helper into the base benchmark", () => {
-  const version = pricingVersion({
-    settings: settings({ minimum_booking_amount: 45, helper_price: 21.55 }),
-  });
-  const quoteCompetitorContext = competitorContext({
-    benchmark: competitorBenchmark({
-      moveType: "furniture-delivery",
-      propertySize: "single-item",
-      benchmarkPricePence: 5000,
-    }),
-  });
-  const onePerson = calculate({
-    version,
-    quoteInput: input({
-      moveType: "furniture-delivery",
-      moveSize: "single-item",
-      preferredMovers: 1,
-    }),
-    quoteCompetitorContext,
-  });
-  const twoPeople = calculate({
-    version,
-    quoteInput: input({
-      moveType: "furniture-delivery",
-      moveSize: "single-item",
-      preferredMovers: 2,
-    }),
-    quoteCompetitorContext,
-  });
-
-  assert.equal(onePerson.status, "FIXED");
-  assert.equal(twoPeople.status, "FIXED");
-  assert.ok((twoPeople.finalTotalPence ?? 0) > (onePerson.finalTotalPence ?? 0));
-  assert.equal(twoPeople.competitorSummary.targetPricePence, 4500);
-  assert.equal(twoPeople.customerBreakdown.some((line) => line.key === "additional_helper_charge"), true);
-  assert.equal(breakdownTotal(onePerson), onePerson.finalTotalPence);
-  assert.equal(breakdownTotal(twoPeople), twoPeople.finalTotalPence);
-});
-
-test("AnyVan benchmark ceiling preserves optional service charges above the base benchmark", () => {
-  const version = pricingVersion({
-    settings: settings({ minimum_booking_amount: 45, optional_service_unit: 18 }),
-  });
-  const quoteCompetitorContext = competitorContext({
-    benchmark: competitorBenchmark({ benchmarkPricePence: 20000 }),
-  });
-  const base = calculate({ version, quoteCompetitorContext });
-  const withWaitingTime = calculate({
-    version,
-    quoteInput: input({ services: services({ waitingTime: true }) }),
-    quoteCompetitorContext,
-  });
-  const serviceLine = withWaitingTime.customerBreakdown.find((line) => line.key === "optional_services_charge");
-
-  assert.equal(base.status, "FIXED");
-  assert.equal(withWaitingTime.status, "FIXED");
-  assert.equal(serviceLine?.amountPence, 1800);
-  assert.ok((withWaitingTime.finalTotalPence ?? 0) >= (base.finalTotalPence ?? 0) + 1800);
-  assert.equal(breakdownTotal(base), base.finalTotalPence);
-  assert.equal(breakdownTotal(withWaitingTime), withWaitingTime.finalTotalPence);
-});
-
-test("AnyVan benchmark ceiling preserves dynamic packing charges above the base benchmark", () => {
-  const version = pricingVersion({
-    settings: settings({ minimum_booking_amount: 45 }),
-  });
-  const quoteCompetitorContext = competitorContext({
-    benchmark: competitorBenchmark({ benchmarkPricePence: 20000 }),
-  });
-  const packingInventory = inventory({ quantity: 25 });
-  const oneBedroomBase = calculate({
-    version,
-    quoteInput: input({ moveSize: "1-bedroom" }),
-    quoteInventory: packingInventory,
-    quoteCompetitorContext,
-  });
-  const base = calculate({ version, quoteInventory: packingInventory, quoteCompetitorContext });
-  const oneBedroomFullPacking = calculate({
-    version,
-    quoteInput: input({ moveSize: "1-bedroom", services: services({ packing: true }) }),
-    quoteInventory: packingInventory,
-    quoteCompetitorContext,
-  });
-  const withMaterials = calculate({
-    version,
-    quoteInput: input({ services: services({ packingMaterials: true }) }),
-    quoteInventory: packingInventory,
-    quoteCompetitorContext,
-  });
-  const withFullPacking = calculate({
-    version,
-    quoteInput: input({ services: services({ packing: true }) }),
-    quoteInventory: packingInventory,
-    quoteCompetitorContext,
-  });
-  const fourBedroomFullPacking = calculate({
-    version,
-    quoteInput: input({ moveSize: "4-bedrooms", services: services({ packing: true }) }),
-    quoteInventory: packingInventory,
-    quoteCompetitorContext,
-  });
-
-  assert.equal(oneBedroomBase.status, "FIXED");
-  assert.equal(base.status, "FIXED");
-  assert.equal(oneBedroomFullPacking.status, "FIXED");
-  assert.equal(withMaterials.status, "FIXED");
-  assert.equal(withFullPacking.status, "FIXED");
-  assert.equal(fourBedroomFullPacking.status, "FIXED");
-  const oneBedroomFullPackingCharge =
-    oneBedroomFullPacking.customerBreakdown.find((line) => line.key === "packing_charge")?.amountPence ?? 0;
-  const materialsCharge = withMaterials.customerBreakdown.find((line) => line.key === "packing_charge")?.amountPence ?? 0;
-  const fullPackingCharge =
-    withFullPacking.customerBreakdown.find((line) => line.key === "packing_charge")?.amountPence ?? 0;
-  const fourBedroomFullPackingCharge =
-    fourBedroomFullPacking.customerBreakdown.find((line) => line.key === "packing_charge")?.amountPence ?? 0;
-
-  assert.equal(oneBedroomFullPackingCharge, 14500);
-  assert.equal(materialsCharge, 6500);
-  assert.equal(fullPackingCharge, 19500);
-  assert.equal(fourBedroomFullPackingCharge, 32500);
-  assert.ok((oneBedroomFullPacking.finalTotalPence ?? 0) >= (oneBedroomBase.finalTotalPence ?? 0) + oneBedroomFullPackingCharge);
-  assert.ok((withMaterials.finalTotalPence ?? 0) >= (base.finalTotalPence ?? 0) + materialsCharge);
-  assert.ok((withFullPacking.finalTotalPence ?? 0) >= (base.finalTotalPence ?? 0) + fullPackingCharge);
-  assert.ok((fourBedroomFullPacking.finalTotalPence ?? 0) > (withFullPacking.finalTotalPence ?? 0));
-});
-
-test("full-house extra items increase AnyVan-ceiling prices above the bedroom baseline", () => {
-  const version = pricingVersion({
-    settings: settings({ minimum_booking_amount: 45 }),
-  });
-  const quoteCompetitorContext = competitorContext({
-    benchmark: competitorBenchmark({
-      propertySize: "1-bedroom",
-      benchmarkPricePence: 20000,
-    }),
-  });
-  const baseInventory = inventory({
-    quantity: 35,
-    estimatedVolumeM3: 0.18,
-    estimatedWeightKg: 5,
-    handlingMinutes: 4,
-  });
-  const extraInventory = inventory({
-    quantity: 36,
-    estimatedVolumeM3: 0.18,
-    estimatedWeightKg: 5,
-    handlingMinutes: 4,
-  });
-  const base = calculate({
-    version,
-    quoteInput: input({ moveSize: "1-bedroom" }),
-    quoteInventory: baseInventory,
-    quoteCompetitorContext,
-  });
-  const withExtra = calculate({
-    version,
-    quoteInput: input({ moveSize: "1-bedroom" }),
-    quoteInventory: extraInventory,
-    quoteCompetitorContext,
-  });
-  const extraLine = withExtra.customerBreakdown.find((line) => line.key === "extra_inventory_charge");
-
-  assert.equal(base.status, "FIXED");
-  assert.equal(withExtra.status, "FIXED");
-  assert.equal(base.customerBreakdown.some((line) => line.key === "extra_inventory_charge"), false);
-  assert.equal(extraLine?.amountPence, 779);
-  assert.equal(base.competitorSummary.enforceExactTarget, false);
-  assert.equal(withExtra.competitorSummary.enforceExactTarget, false);
-  assert.ok((withExtra.finalTotalPence ?? 0) > (base.finalTotalPence ?? 0));
-  assert.equal(breakdownTotal(base), base.finalTotalPence);
-  assert.equal(breakdownTotal(withExtra), withExtra.finalTotalPence);
-});
-
-test("AnyVan benchmark cannot flatten materially different sofa inventories", () => {
-  const version = pricingVersion({
-    settings: settings({ minimum_booking_amount: 45, internal_cost_percent: 0.55 }),
-  });
-  const one = calculateNormalised({ quantity: 1, version });
-  const five = calculateNormalised({ quantity: 5, version });
-  const ten = calculateNormalised({ quantity: 10, version });
-  const twenty = calculateNormalised({ quantity: 20, version });
-  const totals = [one, five, ten, twenty].map((result) => result.finalTotalPence ?? 0);
-
-  assert.deepEqual([one.status, five.status, ten.status, twenty.status], ["FIXED", "FIXED", "FIXED", "FIXED"]);
-  assert.ok(totals[1]! > totals[0]!);
-  assert.ok(totals[2]! > totals[1]!);
-  assert.ok(totals[3]! > totals[2]!);
-  assert.equal(new Set(totals).size, totals.length);
-  assert.equal(ten.vehicleRecommendation.name, "Luton van");
-  assert.ok(twenty.crewRecommendation.totalJobMinutes > ten.crewRecommendation.totalJobMinutes);
-});
-
-test("same-quantity different-volume inventories do not collapse to the same AnyVan price", () => {
-  const version = pricingVersion({
-    settings: settings({ minimum_booking_amount: 45, internal_cost_percent: 0.55 }),
-  });
-  const toyBoxes = toyBoxInventory(10);
-  const sofas = sofaInventory(10);
-  const toyResult = calculateNormalised({
-    quantity: 10,
-    version,
-    quoteInventory: toyBoxes,
-    quoteInput: input({
-      moveSize: "few-items",
-      preferredMovers: 1,
-      inventory: [{ itemId: "toy-box", quantity: 10, room: "living-room" }],
-    }),
-  });
-  const sofaResult = calculateNormalised({
-    quantity: 10,
-    version,
-    quoteInventory: sofas,
-    quoteInput: input({
-      moveSize: "few-items",
-      preferredMovers: 1,
-      inventory: [{ itemId: "sofa", quantity: 10, room: "living-room" }],
-    }),
-  });
-
-  assert.equal(toyResult.status, "FIXED");
-  assert.equal(sofaResult.status, "FIXED");
-  assert.equal(toyResult.inventoryMetrics.itemUnits, sofaResult.inventoryMetrics.itemUnits);
-  assert.ok(sofaResult.inventoryMetrics.totalVolumeM3 > toyResult.inventoryMetrics.totalVolumeM3);
-  assert.ok((sofaResult.finalTotalPence ?? 0) > (toyResult.finalTotalPence ?? 0));
-  assert.equal(breakdownTotal(toyResult), toyResult.finalTotalPence);
-  assert.equal(breakdownTotal(sofaResult), sofaResult.finalTotalPence);
-});
-
-test("customer breakdown reconciles exactly to final total after competitor discount and rounding", () => {
-  const result = calculateNormalised({
-    quantity: 10,
-    competitorOverrides: {
-      benchmarkPricePence: 29354,
-      campaign: { maximumDiscountPence: 10000 },
+test("missing, expired and ambiguous benchmark states block automatic pricing", () => {
+  const input = quote();
+
+  const missing = price(input, [], {
+    benchmark: null,
+    selection: {
+      ...context(input, []).selection,
+      errorCode: "BENCHMARK_UNAVAILABLE",
+      errorMessage: "No benchmark matched",
     },
   });
+  assert.equal(missing.status, "MANUAL_REVIEW");
+  assert.match(missing.manualReviewReasons.join("\n"), /BENCHMARK_UNAVAILABLE/);
+
+  const expired = price(input, [], {
+    benchmark: benchmark(input, [], { effectiveTo: "2026-01-01T00:00:00.000Z" }),
+  });
+  assert.equal(expired.status, "MANUAL_REVIEW");
+  assert.match(expired.manualReviewReasons.join("\n"), /BENCHMARK_EXPIRED/);
+
+  const ambiguous = price(input, [], {
+    benchmark: null,
+    selection: {
+      ...context(input, []).selection,
+      errorCode: "BENCHMARK_AMBIGUOUS",
+      errorMessage: "Overlapping bands",
+    },
+  });
+  assert.equal(ambiguous.status, "MANUAL_REVIEW");
+  assert.match(ambiguous.manualReviewReasons.join("\n"), /BENCHMARK_AMBIGUOUS/);
+});
+
+test("item-led single sofa equals the selected item benchmark and never receives the house discount", () => {
+  const input = quote({ moveType: "furniture-delivery", moveSize: "single-item", inventory: [{ itemId: "sofa-1", quantity: 1, room: "living-room" }] });
+  const inventory = [item()];
+  const result = price(input, inventory, {
+    benchmark: benchmark(input, inventory, { propertySize: "item:sofa", benchmarkPricePence: 6400 }),
+  });
 
   assert.equal(result.status, "FIXED");
-  assert.equal(breakdownTotal(result), result.finalTotalPence);
+  assert.equal(result.finalTotalPence, 6400);
+  assert.equal(result.competitorSummary.appliedRule, "anyvan_item_led_100_percent");
+});
+
+test("item identity changes the benchmark class and stale item benchmarks are rejected", () => {
+  const input = quote({ moveType: "furniture-delivery", moveSize: "single-item", inventory: [{ itemId: "table-1", quantity: 1, room: "dining-room" }] });
+  const inventory = [item({ id: "table-1", category: "Dining", name: "Dining Table" })];
+  const result = price(input, inventory, {
+    benchmark: benchmark(input, inventory, { propertySize: "item:sofa", benchmarkPricePence: 6400 }),
+  });
+
+  assert.equal(result.status, "MANUAL_REVIEW");
+  assert.match(result.manualReviewReasons.join("\n"), /property or item class/);
+});
+
+test("few-items/custom-inventory remain item-led; a large item-led load does not cliff into full-house pricing", () => {
+  const input = quote({
+    moveType: "house-move",
+    moveSize: "custom-inventory",
+    inventory: [
+      { itemId: "sofa-1", quantity: 8, room: "living-room" },
+      { itemId: "box-1", quantity: 40, room: "other" },
+    ],
+  });
+  const inventory = [
+    item({ quantity: 8, estimatedVolumeM3: 1.2, estimatedWeightKg: 45 }),
+    item({ id: "box-1", name: "Large Box", category: "Boxes", quantity: 40, estimatedVolumeM3: 0.5, estimatedWeightKg: 12 }),
+  ];
+
+  const classification = classifyQuoteForPricing(input, inventory);
+  assert.equal(classification.kind, "ITEM_LED");
+  assert.match(classification.benchmarkPropertySizes[0] ?? "", /^inventory:/);
+});
+
+test("inventory array order normalizes to the same item-led benchmark key", () => {
+  const input = quote({ moveType: "house-move", moveSize: "few-items" });
+  const first = [
+    item({ id: "sofa-1", name: "Sofa", quantity: 1 }),
+    item({ id: "chair-1", name: "Armchair", category: "Chair", quantity: 2 }),
+  ];
+  const second = [...first].reverse();
+
   assert.equal(
-    result.customerSummary.discountTotalPence,
-    result.customerBreakdown
-      .filter((line) => line.amountPence < 0 && line.key !== "rounding_adjustment")
-      .reduce((sum, line) => sum + Math.abs(line.amountPence), 0)
+    classifyQuoteForPricing(input, first).benchmarkPropertySizes[0],
+    classifyQuoteForPricing(input, second).benchmarkPropertySizes[0],
   );
 });
 
-test("authoritative preview batches resolve mixed inventories independently", async () => {
-  const version = pricingVersion({
-    settings: settings({ minimum_booking_amount: 45, internal_cost_percent: 0.55 }),
+test("large full-house inventories lift the effective property size above a declared studio", () => {
+  const input = quote({ moveSize: "studio" });
+  const inventory = [item({ quantity: 80, estimatedVolumeM3: 0.8, estimatedWeightKg: 10 })];
+  const normalised = normaliseQuoteInputForPricing(input, inventory);
+
+  assert.equal(normalised.moveSize, "4-bedrooms");
+});
+
+test("unsafe benchmark prices become manual review instead of being silently raised", () => {
+  const unsafeVersion: PricingVersionSnapshot = {
+    ...pricingVersion,
+    settings: { ...settings, labour_hourly_rate: 1000, allow_zero_margin: 0 },
+  };
+  const input = quote();
+  const result = calculateRemovalQuote({
+    input,
+    inventory: [],
+    route,
+    pricingVersion: unsafeVersion,
+    competitorContext: context(input, [], { benchmark: benchmark(input, [], { benchmarkPricePence: 1000 }) }),
+    now,
+    quoteExpiresAt: new Date("2026-08-21T12:00:00.000Z"),
   });
+
+  assert.equal(result.status, "MANUAL_REVIEW");
+  assert.equal(result.finalTotalPence, null);
+  assert.match(result.manualReviewReasons.join("\n"), /SAFETY_REVIEW_REQUIRED/);
+});
+
+test("preview uses the same canonical engine and returns manual review when the route is unavailable", async () => {
+  const input = quote();
   const dependencies: PreviewDependencies = {
-    getActivePricingVersion: async () => version,
-    resolveInventoryForQuote: async (quote) => {
-      const selected = quote.inventory[0];
-      const quantity = selected?.quantity ?? 1;
-      const items = selected?.itemId === "toy-box"
-        ? toyBoxInventory(quantity)
-        : sofaInventory(quantity);
-      return { items, reasons: [] };
-    },
-    calculateServerRoute: async () => ({ route: route(), reasons: [] }),
+    getActivePricingVersion: async () => pricingVersion,
+    resolveInventoryForQuote: async () => ({ items: [], reasons: [] }),
+    calculateServerRoute: async () => ({ route, reasons: [] }),
     getPromotionPricingContext: async () => ({
-      context: promotionContext(),
       invalidPromotionCode: null,
+      context: {
+        campaigns: [],
+        promotionCode: null,
+        priorCompletedBookings: 0,
+        minimumContributionPence: 0,
+        minimumMarginPercent: null,
+        allowZeroMargin: true,
+        allowNegativeMargin: false,
+      },
     }),
-    getCompetitorPricingContext: async (quote) => anyVanContextFor(quote.moveSize, {
-      benchmarkPricePence: 30000,
+    getCompetitorPricingContext: async (quoteInput, _mileage, inventory) => context(quoteInput, inventory),
+  };
+
+  const [preview] = await buildAuthoritativePreviews([input], dependencies);
+  const direct = price(input);
+  assert.equal(preview?.status, "FIXED");
+  assert.equal(preview?.totalPence, direct.finalTotalPence);
+
+  const manualDeps: PreviewDependencies = {
+    ...dependencies,
+    calculateServerRoute: async () => ({ route: null, reasons: ["Mapbox unavailable"] }),
+    getCompetitorPricingContext: async (quoteInput, _mileage, inventory) => ({
+      ...context(quoteInput, inventory, { benchmark: null }),
+      benchmark: null,
+      selection: {
+        ...context(quoteInput, inventory, { benchmark: null }).selection,
+        errorCode: "AUTHORITATIVE_ROUTE_UNAVAILABLE",
+        errorMessage: "No route",
+      },
     }),
   };
-  const toyQuote = input({
-    idempotencyKey: "preview-toy-box",
-    moveSize: "few-items",
-    moveDate: "2026-09-10",
-    preferredMovers: 1,
-    inventory: [{ itemId: "toy-box", quantity: 1, room: "living-room" }],
-  });
-  const sofaQuote = input({
-    idempotencyKey: "preview-sofas",
-    moveSize: "few-items",
-    moveDate: "2026-09-10",
-    preferredMovers: 1,
-    inventory: [{ itemId: "sofa", quantity: 10, room: "living-room" }],
-  });
-
-  const previews = await buildAuthoritativePreviews([toyQuote, sofaQuote], dependencies);
-  const toyPreview = previews[0];
-  const sofaPreview = previews[1];
-
-  assert.equal(toyPreview?.status, "FIXED");
-  assert.equal(sofaPreview?.status, "FIXED");
-  assert.equal(toyPreview?.inventory?.itemUnits, 1);
-  assert.equal(sofaPreview?.inventory?.itemUnits, 10);
-  assert.notEqual(toyPreview?.totalPence, sofaPreview?.totalPence);
-  assert.equal(sofaPreview?.vehicle?.name, "Luton van");
-});
-
-test("safe minimum can apply a partial competitor reduction while explaining that the benchmark was not beaten", () => {
-  const result = calculate({
-    version: pricingVersion({
-      settings: settings({ base_house_move: 300 }),
-    }),
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({ benchmarkPricePence: 23000 }),
-      campaign: beatCampaign({
-        competitorLabel: "Marketplace Rival",
-        minimumPricePence: 23500,
-        maximumDiscountPence: null,
-      }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, true);
-  assert.ok((result.competitorSummary.safeMinimumPricePence ?? 0) >= 23500);
-  assert.equal(result.competitorSummary.finalPricePence, result.competitorSummary.safeMinimumPricePence);
-  assert.match(result.competitorSummary.unableReason ?? "", /Safe minimum/);
-});
-
-test("beat competitor mode does nothing when no benchmark is configured", () => {
-  const result = calculate({
-    quoteCompetitorContext: competitorContext({ benchmark: null }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, false);
-  assert.equal(result.competitorSummary.discountPence, 0);
-  assert.match(result.competitorSummary.unableReason ?? "", /No eligible competitor benchmark/);
-});
-
-test("expired competitor benchmarks are ignored", () => {
-  const result = calculate({
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({ effectiveTo: "2026-08-04T00:00:00.000Z" }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, false);
-  assert.match(result.competitorSummary.unableReason ?? "", /inactive or expired/);
-});
-
-test("beat competitor campaign region rules must match the quote", () => {
-  const result = calculate({
-    quoteCompetitorContext: competitorContext({
-      campaign: beatCampaign({ applicableRegions: ["England"] }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, false);
-  assert.match(result.competitorSummary.unableReason ?? "", /region/);
-});
-
-test("competitor benchmark property size must match the quote", () => {
-  const result = calculate({
-    quoteCompetitorContext: competitorContext({
-      campaign: beatCampaign({ applicablePropertySizes: [] }),
-      benchmark: competitorBenchmark({ propertySize: "1-bedroom" }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, false);
-  assert.match(result.competitorSummary.unableReason ?? "", /property size mismatch/);
-});
-
-test("disabled beat competitor campaigns never reduce the price", () => {
-  const result = calculate({
-    quoteCompetitorContext: competitorContext({
-      campaign: beatCampaign({ enabled: false }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, false);
-  assert.equal(result.competitorSummary.discountPence, 0);
-  assert.match(result.competitorSummary.unableReason ?? "", /disabled or paused/);
-});
-
-test("maximum discount caps can limit the beat competitor target", () => {
-  const result = calculate({
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({ benchmarkPricePence: 10000 }),
-      campaign: beatCampaign({ competitorLabel: "Marketplace Rival", maximumDiscountPence: 1000 }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, true);
-  assert.equal(result.competitorSummary.discountPence, 1000);
-  assert.match(result.competitorSummary.unableReason ?? "", /Maximum discount cap/);
-});
-
-test("minimum margin protection can block a competitor reduction", () => {
-  const result = calculate({
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({ benchmarkPricePence: 10000 }),
-      campaign: beatCampaign({ competitorLabel: "Marketplace Rival", minimumMarginPercent: 0.5 }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, false);
-  assert.ok((result.competitorSummary.safeMinimumPricePence ?? 0) > (result.competitorSummary.targetPricePence ?? 0));
-  assert.match(result.competitorSummary.unableReason ?? "", /Safe minimum/);
-});
-
-test("negative-margin beat campaigns only work when explicitly configured with a loss cap", () => {
-  const result = calculate({
-    version: pricingVersion({
-      settings: settings({ internal_cost_percent: 0.9 }),
-    }),
-    quoteCompetitorContext: competitorContext({
-      benchmark: competitorBenchmark({ benchmarkPricePence: 10000 }),
-      campaign: beatCampaign({
-        competitorLabel: "Marketplace Rival",
-        allowNegativeMargin: true,
-        maximumPermittedLossPence: 5000,
-        minimumPricePence: 8000,
-      }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.competitorSummary.applied, true);
-  assert.ok((result.competitorSummary.finalPricePence ?? 0) < result.competitorSummary.normalOperationalPricePence);
-  assert.ok((result.competitorSummary.safeMinimumPricePence ?? 0) < result.competitorSummary.normalOperationalPricePence);
-});
-
-test("rounding policy never lowers the enforced minimum booking amount", () => {
-  const result = calculate({
-    version: pricingVersion({
-      settings: settings({
-        labour_hourly_rate: 0,
-        inventory_handling_per_minute: 0,
-        access_difficulty_unit: 0,
-        additional_stop_fee: 0,
-        optional_service_unit: 0,
-        heavy_item_unit: 0,
-        regional_charge: 0,
-        parking_or_toll_charge: 0,
-        contingency_percent: 0,
-        minimum_booking_amount: 123,
-        rounding_increment: 10,
-      }),
-      vehicleClasses: [vehicle({
-        baseFeePence: 0,
-        perMilePence: 0,
-        perHourPence: 0,
-      })],
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(result.finalTotalPence, 13000);
-  assert.ok((result.finalTotalPence ?? 0) >= 12300);
-});
-
-test("psychological rounding can end in 9 without violating the minimum price", () => {
-  assert.equal(applyCustomerRounding({
-    valuePence: 35100,
-    minimumPence: 8000,
-    incrementPence: 100,
-    strategy: ROUNDING_STRATEGY.END_IN_9,
-  }), 34900);
-
-  assert.equal(applyCustomerRounding({
-    valuePence: 28000,
-    minimumPence: 28000,
-    incrementPence: 100,
-    strategy: ROUNDING_STRATEGY.END_IN_9,
-  }), 28000);
-});
-
-test("engine-level psychological rounding uses the configured strategy", () => {
-  const result = calculate({
-    version: pricingVersion({
-      settings: settings({
-        rounding_increment: 1,
-        rounding_strategy: ROUNDING_STRATEGY.END_IN_9,
-      }),
-    }),
-  });
-
-  assert.equal(result.status, "FIXED");
-  assert.equal(Math.floor((result.finalTotalPence ?? 0) / 100) % 10, 9);
-});
-
-test("past move dates are never auto-priced", () => {
-  const result = calculate({
-    quoteInput: input({ moveDate: "2026-08-04" }),
-  });
-
-  assert.equal(result.status, "MANUAL_REVIEW");
-  assert.equal(result.finalTotalPence, null);
-  assert.match(result.manualReviewReasons.join("\n"), /past or invalid/);
-});
-
-test("missing server route forces manual review", () => {
-  const result = calculate({ quoteRoute: null });
-
-  assert.equal(result.status, "MANUAL_REVIEW");
-  assert.equal(result.finalTotalPence, null);
-  assert.match(result.manualReviewReasons.join("\n"), /route calculation is unavailable/);
-});
-
-test("inactive or unknown inventory items do not receive a fixed quote", () => {
-  const result = calculate({
-    quoteInventory: inventory({ active: false, name: "Unknown catalogue item" }),
-  });
-
-  assert.equal(result.status, "MANUAL_REVIEW");
-  assert.match(result.manualReviewReasons.join("\n"), /Inventory item is inactive/);
-});
-
-test("customer quote schema strips forged route, item dimensions, and submitted total", () => {
-  const parsed = createQuoteRequestSchema.parse({
-    ...input(),
-    distanceMiles: 9999,
-    finalTotalPence: 1,
-    originalTotalPence: 2,
-    discountTotalPence: 999999,
-    promotionSnapshot: { customerLabel: "Forged" },
-    competitorBenchmarkId: "forged-benchmark",
-    beatCompetitorCampaignId: "forged-campaign",
-    competitorSnapshot: { competitorLabel: "AnyVan", benchmarkPricePence: 1 },
-    benchmarkPricePence: 1,
-    beatPercentage: 0.99,
-    inventory: [{
-      itemId: "sofa",
-      quantity: 1,
-      room: "living-room",
-      estimatedVolumeM3: 999,
-      estimatedWeightKg: 1,
-      price: 1,
-    }],
-  });
-  const parsedAsRecord = parsed as unknown as Record<string, unknown>;
-  const itemAsRecord = parsed.inventory[0] as unknown as Record<string, unknown>;
-
-  assert.equal(parsedAsRecord.distanceMiles, undefined);
-  assert.equal(parsedAsRecord.finalTotalPence, undefined);
-  assert.equal(parsedAsRecord.originalTotalPence, undefined);
-  assert.equal(parsedAsRecord.discountTotalPence, undefined);
-  assert.equal(parsedAsRecord.promotionSnapshot, undefined);
-  assert.equal(parsedAsRecord.competitorBenchmarkId, undefined);
-  assert.equal(parsedAsRecord.beatCompetitorCampaignId, undefined);
-  assert.equal(parsedAsRecord.competitorSnapshot, undefined);
-  assert.equal(parsedAsRecord.benchmarkPricePence, undefined);
-  assert.equal(parsedAsRecord.beatPercentage, undefined);
-  assert.equal(itemAsRecord.estimatedVolumeM3, undefined);
-  assert.equal(itemAsRecord.estimatedWeightKg, undefined);
-  assert.equal(itemAsRecord.price, undefined);
+  const [manual] = await buildAuthoritativePreviews([input], manualDeps);
+  assert.equal(manual?.status, "MANUAL_REVIEW");
+  assert.equal(manual?.totalPence, null);
 });

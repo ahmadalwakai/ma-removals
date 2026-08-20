@@ -1,17 +1,21 @@
+import crypto from "node:crypto";
 import type {
   AdditionalServicesInput,
   AddressAccessInput,
   CreateQuoteRequest,
 } from "@/lib/quotes/schemas";
-import {
-  evaluateCompetitorBenchmark,
-  type CompetitorPricingContext,
-  type CompetitorEvaluationResult,
-} from "@/lib/pricing/competitor-benchmarks";
-import { calculateDistanceCharge } from "@/lib/distance-pricing";
 import { packingChargePenceForMove } from "@/lib/pricing/packing";
-import { evaluatePromotions, type PromotionPricingContext } from "@/lib/pricing/promotions";
-import { applyCustomerRounding } from "@/lib/pricing/rounding";
+import {
+  ANYVAN_HOUSE_FACTOR,
+  ANYVAN_ITEM_LED_FACTOR,
+  pricingIssueReason,
+  type CompetitorBenchmarkSnapshot,
+  type CompetitorEvaluationResult,
+  type CompetitorPricingContext,
+  type PricingClassificationKind,
+  type PricingIssueCode,
+} from "@/lib/pricing/competitor-benchmarks";
+import type { PromotionPricingContext } from "@/lib/pricing/promotions";
 
 export interface ResolvedInventoryItem {
   id: string;
@@ -106,6 +110,25 @@ export interface CrewRecommendation {
   totalJobMinutes: number;
 }
 
+export interface PricingClassification {
+  kind: PricingClassificationKind;
+  requestedMoveSize: string | null;
+  effectivePropertySize: string | null;
+  inventoryInferredPropertySize: string | null;
+  benchmarkPropertySizes: string[];
+  appliedFactor: 0.9 | 1;
+  serviceLevel: string;
+  packingIncluded: boolean;
+  missingBenchmarkDimensions: string[];
+  auditInput: Record<string, unknown>;
+}
+
+export interface BenchmarkSelectionCriteria {
+  classification: PricingClassification;
+  regionCandidates: string[];
+  routeMileage: number | null;
+}
+
 export interface PricingResult {
   pricingVersionId: string | null;
   pricingVersionNumber: number | null;
@@ -149,6 +172,23 @@ export interface PricingResult {
   };
 }
 
+const HOME_MOVE_TYPES = new Set<CreateQuoteRequest["moveType"]>(["house-move", "flat-move"]);
+const ITEM_LED_MOVE_TYPES = new Set<CreateQuoteRequest["moveType"]>([
+  "single-item-delivery",
+  "furniture-delivery",
+  "marketplace-collection",
+]);
+const HOME_PROPERTY_SIZES = [
+  "studio",
+  "1-bedroom",
+  "2-bedrooms",
+  "3-bedrooms",
+  "4-bedrooms",
+  "5-plus-bedrooms",
+] as const;
+const ITEM_LED_MOVE_SIZES = new Set(["single-item", "few-items", "custom-inventory"]);
+const HOME_SIZE_RANK = new Map<string, number>(HOME_PROPERTY_SIZES.map((size, index) => [size, index]));
+
 function poundsToPence(value: number): number {
   return Math.round(value * 100);
 }
@@ -158,180 +198,42 @@ function setting(settings: Record<string, number>, key: string): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function requiredSetting(
-  settings: Record<string, number>,
-  key: string,
-  reasons: string[]
-): number {
-  const value = setting(settings, key);
-  if (value == null) {
-    reasons.push(`Missing pricing setting: ${key}`);
-    return 0;
-  }
-  return value;
-}
-
-function addLine(
-  lines: PriceLine[],
-  internal: InternalPriceLine[],
-  key: string,
-  label: string,
-  amountPence: number,
-  explanation: string
-) {
-  if (amountPence === 0) return;
-  lines.push({ key, label, amountPence });
-  internal.push({ key, label, amountPence, explanation });
-}
-
-function applyCompetitorPriceCeiling(
-  valuePence: number,
-  competitorResult: CompetitorEvaluationResult,
-  minimumCustomerPricePence: number,
-  protectedAddonPence = 0
-): number {
-  if (!competitorResult.applied || competitorResult.finalPricePence == null) return valuePence;
-  const benchmarkCeilingPence = competitorResult.finalPricePence + protectedAddonPence;
-  const safeMinimum = (competitorResult.safeMinimumPricePence ?? minimumCustomerPricePence) + protectedAddonPence;
-  const minimumCustomerTotalPence = minimumCustomerPricePence + protectedAddonPence;
-  return Math.max(
-    safeMinimum,
-    minimumCustomerTotalPence,
-    Math.min(valuePence, benchmarkCeilingPence)
-  );
-}
-
-function dateOnly(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0);
-}
-
-function daysBetween(a: Date, b: Date): number {
-  const one = dateOnly(a).getTime();
-  const two = dateOnly(b).getTime();
-  return Math.round((two - one) / 86_400_000);
-}
-
-function moveTypeBaseKey(moveType: CreateQuoteRequest["moveType"]): string {
-  const map: Record<CreateQuoteRequest["moveType"], string> = {
-    "house-move": "base_house_move",
-    "flat-move": "base_house_move",
-    "office-move": "base_office_removals",
-    "student-move": "base_van_with_man",
-    "single-item-delivery": "single_item_base_fee",
-    "furniture-delivery": "base_furniture_removals",
-    "marketplace-collection": "base_furniture_removals",
-    "piano-move": "base_piano_moves",
-    other: "base_van_with_man",
-  };
-  return map[moveType];
-}
-
-function formatMoveType(moveType: string): string {
-  return moveType
-    .split("-")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-type MoveComplexity = "single_item" | "few_items" | "small_move" | "house_removal";
-type MoveSize = NonNullable<CreateQuoteRequest["moveSize"]>;
-
-const HOME_MOVE_TYPES: CreateQuoteRequest["moveType"][] = ["house-move", "flat-move"];
-const ITEM_LED_MOVE_SIZES: MoveSize[] = ["single-item", "few-items", "custom-inventory"];
-const FULL_HOUSE_BASELINE_UNITS: Partial<Record<MoveSize, number>> = {
-  "1-bedroom": 35,
-  "2-bedrooms": 50,
-  "3-bedrooms": 68,
-  "4-bedrooms": 93,
-  "5-plus-bedrooms": 95,
-};
-
 function settingWithFallback(settings: Record<string, number>, key: string, fallback: number): number {
   return setting(settings, key) ?? fallback;
 }
 
-function isHomeMoveType(moveType: CreateQuoteRequest["moveType"]): boolean {
-  return HOME_MOVE_TYPES.includes(moveType);
+function issue(code: PricingIssueCode, detail: string): string {
+  return pricingIssueReason(code, detail);
 }
 
-function isItemLedMoveSize(moveSize: CreateQuoteRequest["moveSize"]): boolean {
-  return moveSize != null && ITEM_LED_MOVE_SIZES.includes(moveSize);
-}
-
-function moveComplexity(
-  input: CreateQuoteRequest,
-  metrics: InventoryMetrics,
-  settings: Record<string, number>
-): MoveComplexity {
-  const itemLedMoveTypes: CreateQuoteRequest["moveType"][] = [
-    "furniture-delivery",
-    "marketplace-collection",
-    "single-item-delivery",
-  ];
-  const isItemLed =
-    itemLedMoveTypes.includes(input.moveType) ||
-    (isHomeMoveType(input.moveType) && isItemLedMoveSize(input.moveSize));
-  if (!isItemLed) return "house_removal";
-
-  if (metrics.totalVolumeM3 > 10 || metrics.totalWeightKg > 600) return "house_removal";
-
-  const singleThreshold = settingWithFallback(settings, "single_item_threshold", 1);
-  const fewThreshold = settingWithFallback(settings, "few_items_threshold", 5);
-  const smallThreshold = settingWithFallback(settings, "small_move_threshold", 10);
-
-  if (metrics.itemUnits <= singleThreshold) return "single_item";
-  if (metrics.itemUnits <= fewThreshold) return "few_items";
-  if (metrics.itemUnits <= smallThreshold) return "small_move";
-  return "house_removal";
-}
-
-function baseChargeForQuote(
-  input: CreateQuoteRequest,
-  metrics: InventoryMetrics,
-  settings: Record<string, number>,
-  reasons: string[]
-): {
-  amountPounds: number;
-  label: string;
-  usesOperationalVehicleAndLabour: boolean;
-  explanation: string;
-} {
-  const complexity = moveComplexity(input, metrics, settings);
-  if (complexity === "single_item") {
-    return {
-      amountPounds: settingWithFallback(settings, "single_item_base_fee", 23.94),
-      label: "Single item move",
-      usesOperationalVehicleAndLabour: false,
-      explanation: "Single-item inventory base includes standard van and driver allocation",
-    };
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(trimmed);
   }
-  if (complexity === "few_items") {
-    return {
-      amountPounds: settingWithFallback(settings, "few_items_base_fee", 32.92),
-      label: "Few items move",
-      usesOperationalVehicleAndLabour: false,
-      explanation: "Few-items inventory base includes standard van and driver allocation",
-    };
-  }
-  if (complexity === "small_move") {
-    return {
-      amountPounds: settingWithFallback(settings, "small_move_base_fee", 50.87),
-      label: "Small move",
-      usesOperationalVehicleAndLabour: false,
-      explanation: "Small-move inventory base includes standard van and driver allocation",
-    };
-  }
-
-  const key = moveTypeBaseKey(input.moveType);
-  return {
-    amountPounds: requiredSetting(settings, key, reasons),
-    label: `${formatMoveType(input.moveType)} service charge`,
-    usesOperationalVehicleAndLabour: true,
-    explanation: `Applied configured base key ${key}`,
-  };
+  return result;
 }
 
-function inventoryMetrics(items: ResolvedInventoryItem[]): InventoryMetrics {
+function slug(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function stableHash(value: unknown): string {
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+export function inventoryMetrics(items: ResolvedInventoryItem[]): InventoryMetrics {
   return items.reduce<InventoryMetrics>(
     (acc, item) => {
       const qty = Math.max(0, Math.floor(item.quantity));
@@ -341,7 +243,12 @@ function inventoryMetrics(items: ResolvedInventoryItem[]): InventoryMetrics {
       acc.totalHandlingMinutes += (item.handlingMinutes ?? 0) * qty;
       if (item.requiresTwoPeople) acc.twoPersonItemCount += qty;
       if (item.fragile) acc.fragileItemCount += qty;
-      if (item.heavy || item.specialist || (item.estimatedWeightKg ?? 0) >= 80 || /piano|safe|hot tub|vault|pool table/i.test(item.name)) {
+      if (
+        item.heavy ||
+        item.specialist ||
+        (item.estimatedWeightKg ?? 0) >= 80 ||
+        /piano|safe|hot tub|vault|pool table/i.test(item.name)
+      ) {
         acc.heavyOrSpecialItemCount += qty;
       }
       return acc;
@@ -358,65 +265,191 @@ function inventoryMetrics(items: ResolvedInventoryItem[]): InventoryMetrics {
   );
 }
 
-function inferredHomeMoveSize(metrics: InventoryMetrics): MoveSize {
-  const volume = metrics.totalVolumeM3;
-  const units = metrics.itemUnits;
+function roundMetrics(metrics: InventoryMetrics): InventoryMetrics {
+  return {
+    ...metrics,
+    totalVolumeM3: Math.round(metrics.totalVolumeM3 * 100) / 100,
+    totalWeightKg: Math.round(metrics.totalWeightKg * 10) / 10,
+  };
+}
 
-  if (units > 0) {
-    if (units <= 35) return "1-bedroom";
-    if (units <= 50) return "2-bedrooms";
-    if (units <= 68) return "3-bedrooms";
-    if (units <= 93) return "4-bedrooms";
-    return "5-plus-bedrooms";
+function inferHomeSizeFromInventory(metrics: InventoryMetrics): (typeof HOME_PROPERTY_SIZES)[number] | null {
+  if (metrics.itemUnits <= 0 && metrics.totalVolumeM3 <= 0) return null;
+  const units = metrics.itemUnits;
+  const volume = metrics.totalVolumeM3;
+
+  if (units > 93 || volume > 70) return "5-plus-bedrooms";
+  if (units > 68 || volume > 50) return "4-bedrooms";
+  if (units > 50 || volume > 35) return "3-bedrooms";
+  if (units > 35 || volume > 14) return "2-bedrooms";
+  if (units > 20 || volume > 8) return "1-bedroom";
+  return "studio";
+}
+
+function largerHomeSize(
+  declared: string | null | undefined,
+  inferred: string | null
+): string | null {
+  if (!declared || !HOME_SIZE_RANK.has(declared)) return inferred;
+  if (!inferred || !HOME_SIZE_RANK.has(inferred)) return declared;
+  return (HOME_SIZE_RANK.get(inferred) ?? 0) > (HOME_SIZE_RANK.get(declared) ?? 0)
+    ? inferred
+    : declared;
+}
+
+function normalisedInventoryAudit(items: ResolvedInventoryItem[]) {
+  return items
+    .map((item) => ({
+      id: item.id,
+      category: item.category,
+      name: item.name,
+      quantity: Math.max(0, Math.floor(item.quantity)),
+      volumeM3: item.estimatedVolumeM3 ?? null,
+      weightKg: item.estimatedWeightKg ?? null,
+      handlingMinutes: item.handlingMinutes ?? null,
+      requiresTwoPeople: item.requiresTwoPeople,
+      fragile: item.fragile,
+      heavy: Boolean(item.heavy),
+      specialist: Boolean(item.specialist),
+      minimumCrew: item.minimumCrew ?? null,
+    }))
+    .sort((a, b) => `${a.id}:${a.name}:${a.quantity}`.localeCompare(`${b.id}:${b.name}:${b.quantity}`));
+}
+
+function itemLedBenchmarkKeys(items: ResolvedInventoryItem[], metrics: InventoryMetrics): {
+  keys: string[];
+  missingDimensions: string[];
+  auditInput: Record<string, unknown>;
+} {
+  const expanded = normalisedInventoryAudit(items).filter((item) => item.quantity > 0);
+  const missingDimensions: string[] = [];
+
+  if (metrics.itemUnits <= 0 || expanded.length === 0) {
+    return {
+      keys: [],
+      missingDimensions: ["inventory_item_identity"],
+      auditInput: { inventory: expanded },
+    };
   }
 
-  if (volume <= 14) return "1-bedroom";
-  if (volume <= 35) return "2-bedrooms";
-  if (volume <= 50) return "3-bedrooms";
-  if (volume <= 70) return "4-bedrooms";
-  return "5-plus-bedrooms";
+  if (metrics.itemUnits === 1 && expanded.length === 1) {
+    const item = expanded[0]!;
+    const itemKey = slug(item.name);
+    const categoryKey = slug(item.category);
+    return {
+      keys: [
+        itemKey ? `item:${itemKey}` : null,
+        categoryKey ? `category:${categoryKey}` : null,
+      ].filter((value): value is string => Boolean(value)),
+      missingDimensions,
+      auditInput: { inventory: expanded },
+    };
+  }
+
+  const digest = stableHash(expanded);
+  return {
+    keys: [`inventory:${digest}`],
+    missingDimensions,
+    auditInput: {
+      inventory: expanded,
+      inventoryBenchmarkKey: `inventory:${digest}`,
+    },
+  };
 }
 
-function fullHouseBaselineUnits(moveSize: CreateQuoteRequest["moveSize"]): number | null {
-  if (!moveSize) return null;
-  return FULL_HOUSE_BASELINE_UNITS[moveSize] ?? null;
-}
-
-function extraInventoryCharge(
+export function classifyQuoteForPricing(
   input: CreateQuoteRequest,
-  metrics: InventoryMetrics,
-  settings: Record<string, number>
-): { amountPence: number; extraUnits: number; explanation: string } | null {
-  if (!isHomeMoveType(input.moveType)) return null;
+  inventory: ResolvedInventoryItem[]
+): PricingClassification {
+  const metrics = inventoryMetrics(inventory);
+  const requestedMoveSize = input.moveSize ?? null;
+  const packingIncluded = Boolean(input.services?.packing);
+  const serviceLevel = "standard";
 
-  const baselineUnits = fullHouseBaselineUnits(input.moveSize);
-  if (baselineUnits == null || metrics.itemUnits <= baselineUnits || metrics.itemUnits <= 0) return null;
+  if (HOME_MOVE_TYPES.has(input.moveType) && requestedMoveSize && HOME_SIZE_RANK.has(requestedMoveSize)) {
+    const inferred = inferHomeSizeFromInventory(metrics);
+    const effectivePropertySize = largerHomeSize(requestedMoveSize, inferred);
+    return {
+      kind: "FULL_HOUSE",
+      requestedMoveSize,
+      effectivePropertySize,
+      inventoryInferredPropertySize: inferred,
+      benchmarkPropertySizes: effectivePropertySize ? [effectivePropertySize] : [],
+      appliedFactor: ANYVAN_HOUSE_FACTOR,
+      serviceLevel,
+      packingIncluded,
+      missingBenchmarkDimensions: [],
+      auditInput: {
+        requestedMoveSize,
+        inventoryInferredPropertySize: inferred,
+        effectivePropertySize,
+      },
+    };
+  }
 
-  const extraUnits = metrics.itemUnits - baselineUnits;
-  const averageVolumeM3 = metrics.totalVolumeM3 / metrics.itemUnits;
-  const averageWeightKg = metrics.totalWeightKg / metrics.itemUnits;
-  const averageHandlingMinutes = metrics.totalHandlingMinutes / metrics.itemUnits;
+  const itemLed =
+    ITEM_LED_MOVE_TYPES.has(input.moveType) ||
+    (HOME_MOVE_TYPES.has(input.moveType) && ITEM_LED_MOVE_SIZES.has(requestedMoveSize ?? ""));
 
-  const perItemPounds = settingWithFallback(settings, "extra_inventory_item_unit", 6);
-  const perM3Pounds = settingWithFallback(settings, "extra_inventory_volume_m3_unit", 3);
-  const perKgPounds = settingWithFallback(settings, "extra_inventory_weight_kg_unit", 0.05);
-  const perMinutePounds = settingWithFallback(settings, "extra_inventory_handling_minute_unit", 0.25);
-
-  const extraVolumeM3 = averageVolumeM3 * extraUnits;
-  const extraWeightKg = averageWeightKg * extraUnits;
-  const extraHandlingMinutes = averageHandlingMinutes * extraUnits;
-  const amountPounds =
-    extraUnits * perItemPounds +
-    extraVolumeM3 * perM3Pounds +
-    extraWeightKg * perKgPounds +
-    extraHandlingMinutes * perMinutePounds;
+  if (itemLed) {
+    const keys = itemLedBenchmarkKeys(inventory, metrics);
+    return {
+      kind: "ITEM_LED",
+      requestedMoveSize,
+      effectivePropertySize: keys.keys[0] ?? requestedMoveSize,
+      inventoryInferredPropertySize: null,
+      benchmarkPropertySizes: keys.keys,
+      appliedFactor: ANYVAN_ITEM_LED_FACTOR,
+      serviceLevel,
+      packingIncluded,
+      missingBenchmarkDimensions: keys.missingDimensions,
+      auditInput: {
+        ...keys.auditInput,
+        requestedMoveSize,
+        itemUnits: metrics.itemUnits,
+        totalVolumeM3: Math.round(metrics.totalVolumeM3 * 100) / 100,
+        totalWeightKg: Math.round(metrics.totalWeightKg * 10) / 10,
+        heavyOrSpecialItemCount: metrics.heavyOrSpecialItemCount,
+      },
+    };
+  }
 
   return {
-    amountPence: poundsToPence(amountPounds),
-    extraUnits,
-    explanation:
-      `Full-house baseline for ${input.moveSize} is ${baselineUnits} items; ` +
-      `${extraUnits} extra item${extraUnits === 1 ? "" : "s"} priced from average item count, volume, weight, and handling time`,
+    kind: "UNSUPPORTED",
+    requestedMoveSize,
+    effectivePropertySize: null,
+    inventoryInferredPropertySize: null,
+    benchmarkPropertySizes: [],
+    appliedFactor: ANYVAN_ITEM_LED_FACTOR,
+    serviceLevel,
+    packingIncluded,
+    missingBenchmarkDimensions: ["supported_move_type_or_property_size"],
+    auditInput: {
+      moveType: input.moveType,
+      requestedMoveSize,
+    },
+  };
+}
+
+export function regionCandidatesForBenchmark(input: CreateQuoteRequest): string[] {
+  return uniqueStrings([
+    input.collection.city,
+    input.delivery.city,
+    input.collection.region,
+    input.delivery.region,
+    input.collection.country === "United Kingdom" ? "Scotland" : null,
+  ]);
+}
+
+export function benchmarkSelectionCriteriaForQuote(
+  input: CreateQuoteRequest,
+  inventory: ResolvedInventoryItem[],
+  routeMileage: number | null
+): BenchmarkSelectionCriteria {
+  return {
+    classification: classifyQuoteForPricing(input, inventory),
+    regionCandidates: regionCandidatesForBenchmark(input),
+    routeMileage,
   };
 }
 
@@ -424,21 +457,14 @@ export function normaliseQuoteInputForPricing(
   input: CreateQuoteRequest,
   inventory: ResolvedInventoryItem[]
 ): CreateQuoteRequest {
-  if (!isHomeMoveType(input.moveType) || !isItemLedMoveSize(input.moveSize)) {
+  const classification = classifyQuoteForPricing(input, inventory);
+  if (classification.kind !== "FULL_HOUSE") return input;
+  if (!classification.effectivePropertySize || classification.effectivePropertySize === input.moveSize) {
     return input;
   }
-
-  const metrics = inventoryMetrics(inventory);
-  const remainsItemLed =
-    metrics.totalVolumeM3 <= 10 &&
-    metrics.totalWeightKg <= 600 &&
-    metrics.itemUnits <= 10;
-
-  if (remainsItemLed) return input;
-
   return {
     ...input,
-    moveSize: inferredHomeMoveSize(metrics),
+    moveSize: classification.effectivePropertySize as CreateQuoteRequest["moveSize"],
   };
 }
 
@@ -449,27 +475,10 @@ function accessDifficulty(access: AddressAccessInput): number {
   score += access.externalStairs * 0.75;
   score += Math.ceil(access.carryDistanceMeters / 25) * 0.6;
   if (access.parking === "restricted" || access.parking === "unknown") score += 1.5;
+  if (access.parking === "paid") score += 1;
   if (access.narrowRoad) score += 2;
   if (access.loadingBayAvailable) score -= 0.8;
-  return score;
-}
-
-function optionalServiceUnits(services: AdditionalServicesInput): number {
-  const excluded = new Set([
-    "packing",
-    "packingMaterials",
-    "unpacking",
-    "dismantling",
-    "reassembly",
-    "furnitureProtection",
-    "mattressProtection",
-    "tvProtection",
-    "dismantlingItems",
-    "reassemblyItems",
-  ]);
-  return Object.entries(services as Record<string, unknown>).filter(([key, value]) => (
-    !excluded.has(key) && value === true
-  )).length;
+  return Math.max(0, score);
 }
 
 function serviceItemCount(services: AdditionalServicesInput, key: string): number {
@@ -478,33 +487,15 @@ function serviceItemCount(services: AdditionalServicesInput, key: string): numbe
   return Math.max(0, Math.min(99, Math.floor(value)));
 }
 
-function packingChargePence(
-  services: AdditionalServicesInput,
-  moveSize: CreateQuoteRequest["moveSize"],
-  metrics: InventoryMetrics
-): number {
-  if (services.packing) {
-    return packingChargePenceForMove("full", moveSize, metrics.itemUnits);
-  }
-
-  if (services.packingMaterials) {
-    return packingChargePenceForMove("materials", moveSize, metrics.itemUnits);
-  }
-
-  return 0;
-}
-
 function chooseVehicle(
   vehicles: PricingVehicleClass[],
-  metrics: InventoryMetrics,
-  reasons: string[]
+  metrics: InventoryMetrics
 ): VehicleRecommendation {
   const active = vehicles
     .filter((vehicle) => vehicle.isActive)
     .sort((a, b) => (a.maxUsableVolumeM3 ?? Number.MAX_SAFE_INTEGER) - (b.maxUsableVolumeM3 ?? Number.MAX_SAFE_INTEGER));
 
   if (active.length === 0) {
-    reasons.push("No active vehicle class is configured");
     return {
       vehicleClassId: null,
       name: null,
@@ -515,52 +506,29 @@ function chooseVehicle(
     };
   }
 
-  const invalid = active.find(
-    (vehicle) =>
-      vehicle.maxUsableVolumeM3 == null ||
-      vehicle.maxPayloadKg == null ||
-      vehicle.baseFeePence == null ||
-      vehicle.perMilePence == null ||
-      vehicle.perHourPence == null ||
-      vehicle.loadingEfficiencyFactor == null ||
-      vehicle.unloadingEfficiencyFactor == null
-  );
-  if (invalid) {
-    reasons.push(`Vehicle class ${invalid.name} is missing operational or pricing settings`);
-  }
-
   const selected = active.find(
     (vehicle) =>
       (vehicle.maxUsableVolumeM3 ?? -1) >= metrics.totalVolumeM3 &&
       (vehicle.maxPayloadKg ?? -1) >= metrics.totalWeightKg
   );
-
-  if (!selected) {
-    const largest = active[active.length - 1] ?? null;
-    return {
-      vehicleClassId: largest?.id ?? null,
-      name: largest?.name ?? null,
-      multipleVehiclesRequired: true,
-      multipleTripsLikely: true,
-      capacityUtilisation:
-        largest?.maxUsableVolumeM3 ? metrics.totalVolumeM3 / largest.maxUsableVolumeM3 : null,
-      payloadUtilisation:
-        largest?.maxPayloadKg ? metrics.totalWeightKg / largest.maxPayloadKg : null,
-    };
-  }
-
-  const aboveVolumeThreshold = selected.manualReviewThresholdM3 != null && metrics.totalVolumeM3 >= selected.manualReviewThresholdM3;
-  const abovePayloadThreshold = selected.manualReviewPayloadKg != null && metrics.totalWeightKg >= selected.manualReviewPayloadKg;
+  const vehicle = selected ?? active[active.length - 1]!;
+  const capacityUtilisation = vehicle.maxUsableVolumeM3
+    ? metrics.totalVolumeM3 / vehicle.maxUsableVolumeM3
+    : null;
+  const payloadUtilisation = vehicle.maxPayloadKg
+    ? metrics.totalWeightKg / vehicle.maxPayloadKg
+    : null;
 
   return {
-    vehicleClassId: selected.id,
-    name: selected.name,
-    multipleVehiclesRequired: false,
-    multipleTripsLikely: aboveVolumeThreshold || abovePayloadThreshold,
-    capacityUtilisation:
-      selected.maxUsableVolumeM3 ? metrics.totalVolumeM3 / selected.maxUsableVolumeM3 : null,
-    payloadUtilisation:
-      selected.maxPayloadKg ? metrics.totalWeightKg / selected.maxPayloadKg : null,
+    vehicleClassId: vehicle.id,
+    name: vehicle.name,
+    multipleVehiclesRequired: !selected,
+    multipleTripsLikely:
+      !selected ||
+      (vehicle.manualReviewThresholdM3 != null && metrics.totalVolumeM3 >= vehicle.manualReviewThresholdM3) ||
+      (vehicle.manualReviewPayloadKg != null && metrics.totalWeightKg >= vehicle.manualReviewPayloadKg),
+    capacityUtilisation,
+    payloadUtilisation,
   };
 }
 
@@ -571,29 +539,19 @@ function selectedVehicle(
   return vehicles.find((vehicle) => vehicle.id === recommendation.vehicleClassId) ?? null;
 }
 
-function vehicleUsageUnits(vehicle: PricingVehicleClass | null, recommendation: VehicleRecommendation): number {
-  if (!vehicle) return 1;
-  const byVolume = vehicle.maxUsableVolumeM3 && recommendation.capacityUtilisation
-    ? Math.ceil(recommendation.capacityUtilisation)
-    : 1;
-  const byPayload = vehicle.maxPayloadKg && recommendation.payloadUtilisation
-    ? Math.ceil(recommendation.payloadUtilisation)
-    : 1;
-  return Math.max(1, byVolume, byPayload);
-}
-
-function chargeableVehicleUnits(vehicleUnits: number, settings: Record<string, number>): number {
-  const extraCapacityFactor = Math.max(
-    0,
-    Math.min(1, setting(settings, "additional_vehicle_charge_factor") ?? 0.5)
-  );
-  const extraUnits = Math.max(0, vehicleUnits - 1);
-  return 1 + extraUnits * extraCapacityFactor;
-}
-
-function formatVehicleUnits(units: number): string {
-  if (Number.isInteger(units)) return units.toString();
-  return units.toFixed(1).replace(/\.0$/, "");
+function inferredCrew(
+  input: CreateQuoteRequest,
+  inventory: ResolvedInventoryItem[],
+  metrics: InventoryMetrics,
+  vehicle: PricingVehicleClass | null
+): number {
+  const itemMinimum = inventory.reduce((max, item) => Math.max(max, item.minimumCrew ?? 0), 0);
+  const heavyMinimum = metrics.heavyOrSpecialItemCount > 0 || metrics.twoPersonItemCount > 0 ? 2 : 1;
+  const volumeMinimum = metrics.totalVolumeM3 > 35 || metrics.itemUnits > 50 ? 3 : metrics.totalVolumeM3 > 8 || metrics.itemUnits > 20 ? 2 : 1;
+  const requested = input.preferredMovers ?? 0;
+  const minimum = Math.max(1, itemMinimum, heavyMinimum, volumeMinimum, requested);
+  const maxCrew = vehicle?.maxCrew ?? 12;
+  return Math.min(maxCrew, minimum);
 }
 
 function crewRecommendation(
@@ -601,54 +559,334 @@ function crewRecommendation(
   inventory: ResolvedInventoryItem[],
   metrics: InventoryMetrics,
   route: RouteMetrics | null,
-  vehicle: PricingVehicleClass | null,
-  reasons: string[]
+  vehicle: PricingVehicleClass | null
 ): CrewRecommendation {
-  const loadingEfficiency = vehicle?.loadingEfficiencyFactor ?? 1;
-  const unloadingEfficiency = vehicle?.unloadingEfficiencyFactor ?? 1;
-  const collectionDifficulty = accessDifficulty(input.collection);
-  const deliveryDifficulty = accessDifficulty(input.delivery);
-  const stopDifficulty = input.additionalStop ? accessDifficulty(input.additionalStop) * 0.5 : 0;
-  const accessMultiplier = 1 + (collectionDifficulty + deliveryDifficulty + stopDifficulty) * 0.04;
-  const baseHandling = Math.max(metrics.totalHandlingMinutes, metrics.itemUnits * 4);
-  const loadingMinutes = Math.ceil((baseHandling * accessMultiplier) / loadingEfficiency);
-  const unloadingMinutes = Math.ceil((baseHandling * (1 + deliveryDifficulty * 0.04)) / unloadingEfficiency);
+  const movers = inferredCrew(input, inventory, metrics, vehicle);
+  const accessMinutes = Math.round((accessDifficulty(input.collection) + accessDifficulty(input.delivery)) * 8);
+  const loadingMinutes = Math.max(15, Math.ceil(metrics.totalHandlingMinutes * (vehicle?.loadingEfficiencyFactor ?? 1) + accessMinutes));
+  const unloadingMinutes = Math.max(10, Math.ceil(metrics.totalHandlingMinutes * 0.65 * (vehicle?.unloadingEfficiencyFactor ?? 1) + accessMinutes * 0.65));
   const travelMinutes = route?.durationMinutes ?? 0;
-
-  const preferredMovers = input.preferredMovers;
-  const hasPreferredMovers = typeof preferredMovers === "number" && Number.isFinite(preferredMovers);
-  const vehicleMinimumCrew = vehicle?.minCrew ?? 1;
-  let requiredMovers = hasPreferredMovers ? Math.max(1, Math.floor(preferredMovers)) : vehicleMinimumCrew;
-  if (!hasPreferredMovers && (metrics.twoPersonItemCount > 0 || metrics.heavyOrSpecialItemCount > 0)) requiredMovers = Math.max(requiredMovers, 2);
-  if (!hasPreferredMovers) {
-    for (const item of inventory) {
-      if (item.minimumCrew != null) requiredMovers = Math.max(requiredMovers, item.minimumCrew);
-    }
-  }
-  if (
-    !hasPreferredMovers &&
-    (metrics.totalHandlingMinutes > 420 || collectionDifficulty + deliveryDifficulty > 14)
-  ) {
-    requiredMovers = Math.max(requiredMovers, 3);
-  }
-  let movers = requiredMovers;
-  if (input.services.additionalMover && !hasPreferredMovers) movers += 1;
-  if (vehicle && movers > vehicle.maxCrew) {
-    reasons.push(`Required crew exceeds maximum crew for ${vehicle.name}`);
-    movers = vehicle.maxCrew;
-  }
-
-  const totalJobMinutes = loadingMinutes + unloadingMinutes + travelMinutes;
-  const chargeableLabourMinutes = Math.max(60, Math.ceil((loadingMinutes + unloadingMinutes) / Math.max(movers, 1)));
-
+  const chargeableLabourMinutes = Math.ceil((loadingMinutes + unloadingMinutes) / Math.max(1, movers));
   return {
     movers,
     chargeableLabourMinutes,
     loadingMinutes,
     unloadingMinutes,
     travelMinutes,
-    totalJobMinutes,
+    totalJobMinutes: travelMinutes + chargeableLabourMinutes,
   };
+}
+
+function addLine(
+  lines: PriceLine[],
+  internal: InternalPriceLine[],
+  key: string,
+  label: string,
+  amountPence: number,
+  explanation: string
+) {
+  if (amountPence === 0) return;
+  lines.push({ key, label, amountPence });
+  internal.push({ key, label, amountPence, explanation });
+}
+
+function optionalServiceLines(params: {
+  input: CreateQuoteRequest;
+  classification: PricingClassification;
+  metrics: InventoryMetrics;
+  settings: Record<string, number>;
+  benchmark: CompetitorBenchmarkSnapshot | null;
+  crew: CrewRecommendation;
+  inferredCrewCount: number;
+  customerBreakdown: PriceLine[];
+  internalBreakdown: InternalPriceLine[];
+}) {
+  const {
+    input,
+    classification,
+    metrics,
+    settings,
+    benchmark,
+    crew,
+    inferredCrewCount,
+    customerBreakdown,
+    internalBreakdown,
+  } = params;
+  const services = input.services;
+
+  if (services.packing && !benchmark?.packingIncluded) {
+    addLine(
+      customerBreakdown,
+      internalBreakdown,
+      "packing_charge",
+      "Full packing service",
+      packingChargePenceForMove("full", input.moveSize, metrics.itemUnits),
+      "Packing is charged separately because the selected benchmark does not include equivalent packing"
+    );
+  } else if (!services.packing && services.packingMaterials) {
+    addLine(
+      customerBreakdown,
+      internalBreakdown,
+      "packing_materials_charge",
+      "Packing materials",
+      packingChargePenceForMove("materials", input.moveSize, metrics.itemUnits),
+      "Packing materials are an optional add-on outside the selected move benchmark"
+    );
+  }
+
+  const furnitureHelpItems =
+    serviceItemCount(services, "dismantlingItems") +
+    serviceItemCount(services, "reassemblyItems") +
+    (services.dismantling ? 1 : 0) +
+    (services.reassembly ? 1 : 0);
+  if (furnitureHelpItems > 0) {
+    const unitPence = poundsToPence(settingWithFallback(settings, "assembly_price_per_item", 13.17));
+    addLine(
+      customerBreakdown,
+      internalBreakdown,
+      "assembly_dismantling_charge",
+      "Dismantling / reassembly",
+      furnitureHelpItems * unitPence,
+      "Furniture dismantling and reassembly are separated from the competitor benchmark"
+    );
+  }
+
+  if (input.additionalStop) {
+    addLine(
+      customerBreakdown,
+      internalBreakdown,
+      "additional_stop_charge",
+      "Additional stop",
+      poundsToPence(settingWithFallback(settings, "additional_stop_fee", 14.96)),
+      "Additional stops are priced separately unless included in a matching benchmark"
+    );
+  }
+
+  const accessScore = accessDifficulty(input.collection) + accessDifficulty(input.delivery) +
+    (input.additionalStop ? accessDifficulty(input.additionalStop) * 0.5 : 0);
+  if (accessScore >= 4) {
+    addLine(
+      customerBreakdown,
+      internalBreakdown,
+      "difficult_access_charge",
+      "Difficult access",
+      poundsToPence(Math.ceil(accessScore) * settingWithFallback(settings, "access_difficulty_unit", 2.39)),
+      "Difficult access is separated from the standard benchmark service"
+    );
+  }
+
+  const explicitServiceKeys = [
+    "unpacking",
+    "furnitureProtection",
+    "mattressProtection",
+    "tvProtection",
+    "wasteDisposal",
+    "waitingTime",
+  ] as const;
+  const explicitUnits = explicitServiceKeys.reduce((sum, key) => sum + (services[key] ? 1 : 0), 0);
+  if (explicitUnits > 0) {
+    addLine(
+      customerBreakdown,
+      internalBreakdown,
+      "optional_services_charge",
+      "Additional services",
+      poundsToPence(explicitUnits * settingWithFallback(settings, "optional_service_unit", 10.77)),
+      "Optional services not represented by the benchmark are displayed separately"
+    );
+  }
+
+  if (classification.kind === "FULL_HOUSE" && (metrics.heavyOrSpecialItemCount > 0 || services.heavyItemHandling || services.pianoHandling)) {
+    const units = Math.max(metrics.heavyOrSpecialItemCount, services.heavyItemHandling || services.pianoHandling ? 1 : 0);
+    addLine(
+      customerBreakdown,
+      internalBreakdown,
+      "heavy_and_special_item_charge",
+      "Heavy or specialist handling",
+      poundsToPence(units * settingWithFallback(settings, "heavy_item_unit", 23.94)),
+      "Heavy or specialist items are separated because the selected home-removal benchmark is a standard-service benchmark"
+    );
+  }
+
+  const extraMovers = Math.max(0, crew.movers - inferredCrewCount);
+  if (extraMovers > 0 || services.additionalMover) {
+    const units = Math.max(extraMovers, services.additionalMover ? 1 : 0);
+    addLine(
+      customerBreakdown,
+      internalBreakdown,
+      "additional_helper_charge",
+      `${units} additional mover${units === 1 ? "" : "s"}`,
+      poundsToPence(units * settingWithFallback(settings, "helper_price", 21.55)),
+      "Customer-requested extra crew is separated from the benchmark move price"
+    );
+  }
+}
+
+function benchmarkSelectionIssue(
+  input: CreateQuoteRequest,
+  route: RouteMetrics | null,
+  criteria: BenchmarkSelectionCriteria,
+  context: CompetitorPricingContext | null | undefined,
+  now: Date
+): string | null {
+  const classification = criteria.classification;
+  const benchmark = context?.benchmark ?? null;
+
+  if (!route) {
+    return issue("AUTHORITATIVE_ROUTE_UNAVAILABLE", "Server route mileage is required before an automatic price can be issued");
+  }
+  if (classification.kind === "UNSUPPORTED") {
+    return issue("MANUAL_REVIEW_REQUIRED", "Move type and property size do not map to a supported AnyVan benchmark class");
+  }
+  if (classification.missingBenchmarkDimensions.length > 0) {
+    return issue(
+      "MANUAL_REVIEW_REQUIRED",
+      `Missing benchmark dimension: ${classification.missingBenchmarkDimensions.join(", ")}`
+    );
+  }
+  if (context?.selection.errorCode) {
+    return issue(context.selection.errorCode, context.selection.errorMessage ?? "Benchmark selection failed");
+  }
+  if (!benchmark) {
+    return issue("BENCHMARK_UNAVAILABLE", "No active AnyVan benchmark matched the normalized pricing inputs");
+  }
+  if (!benchmark.active) {
+    return issue("BENCHMARK_EXPIRED", "Selected benchmark is inactive");
+  }
+  if (new Date(benchmark.effectiveFrom).getTime() > now.getTime()) {
+    return issue("BENCHMARK_EXPIRED", "Selected benchmark is not yet effective");
+  }
+  if (benchmark.effectiveTo && new Date(benchmark.effectiveTo).getTime() <= now.getTime()) {
+    return issue("BENCHMARK_EXPIRED", "Selected benchmark has expired");
+  }
+  if (!Number.isInteger(benchmark.benchmarkPricePence) || benchmark.benchmarkPricePence <= 0) {
+    return issue("BENCHMARK_UNAVAILABLE", "Selected benchmark has no positive benchmarkPricePence");
+  }
+  if (benchmark.moveType !== input.moveType) {
+    return issue("BENCHMARK_UNAVAILABLE", "Selected benchmark move type does not match the quote");
+  }
+  if (!classification.benchmarkPropertySizes.includes(benchmark.propertySize)) {
+    return issue("BENCHMARK_UNAVAILABLE", "Selected benchmark property or item class does not match the quote");
+  }
+  if (benchmark.serviceLevel !== classification.serviceLevel) {
+    return issue("BENCHMARK_UNAVAILABLE", "Selected benchmark service level does not match the quote");
+  }
+  if (benchmark.packingIncluded !== classification.packingIncluded) {
+    return issue("BENCHMARK_UNAVAILABLE", "Selected benchmark packing mode does not match the quote");
+  }
+  if (!criteria.regionCandidates.some((region) => region.toLowerCase() === benchmark.region.toLowerCase())) {
+    return issue("BENCHMARK_UNAVAILABLE", "Selected benchmark region does not match collection or delivery region");
+  }
+  if (route.distanceMiles < benchmark.distanceBandMinMiles) {
+    return issue("BENCHMARK_UNAVAILABLE", "Authoritative route mileage is below the selected benchmark distance band");
+  }
+  if (benchmark.distanceBandMaxMiles != null && route.distanceMiles > benchmark.distanceBandMaxMiles) {
+    return issue("BENCHMARK_UNAVAILABLE", "Authoritative route mileage is above the selected benchmark distance band");
+  }
+
+  return null;
+}
+
+function competitorSummary(params: {
+  benchmark: CompetitorBenchmarkSnapshot | null;
+  context: CompetitorPricingContext | null | undefined;
+  classification: PricingClassification;
+  customerMovePricePence: number | null;
+  finalTotalPence: number | null;
+  unableReason: string | null;
+}): CompetitorEvaluationResult {
+  const benchmark = params.benchmark;
+  const factor = params.classification.appliedFactor;
+  if (!benchmark || params.customerMovePricePence == null || params.unableReason) {
+    return {
+      applied: false,
+      benchmarkId: benchmark?.id ?? null,
+      campaignId: params.context?.campaign?.id ?? null,
+      normalOperationalPricePence: 0,
+      benchmarkPricePence: benchmark?.benchmarkPricePence ?? null,
+      targetPricePence: benchmark ? Math.floor(benchmark.benchmarkPricePence * factor) : null,
+      safeMinimumPricePence: null,
+      finalPricePence: null,
+      discountPence: 0,
+      savingAgainstBenchmarkPence: null,
+      appliedRule: null,
+      unableReason: params.unableReason,
+      customerLabel: null,
+      enforceExactTarget: true,
+      internalNotes: params.unableReason ? [params.unableReason] : [],
+    };
+  }
+
+  const discountPence = Math.max(0, benchmark.benchmarkPricePence - params.customerMovePricePence);
+  return {
+    applied: true,
+    benchmarkId: benchmark.id,
+    campaignId: params.context?.campaign?.id ?? null,
+    normalOperationalPricePence: params.finalTotalPence ?? params.customerMovePricePence,
+    benchmarkPricePence: benchmark.benchmarkPricePence,
+    targetPricePence: params.customerMovePricePence,
+    safeMinimumPricePence: null,
+    finalPricePence: params.finalTotalPence,
+    discountPence,
+    savingAgainstBenchmarkPence: discountPence,
+    appliedRule: factor === ANYVAN_HOUSE_FACTOR ? "anyvan_house_90_percent" : "anyvan_item_led_100_percent",
+    unableReason: null,
+    customerLabel: factor === ANYVAN_HOUSE_FACTOR ? "10% below AnyVan benchmark" : "AnyVan benchmark price",
+    enforceExactTarget: true,
+    internalNotes: [
+      `Selected AnyVan benchmark ${benchmark.id}`,
+      `Region ${benchmark.region}; distance band ${benchmark.distanceBandMinMiles}-${benchmark.distanceBandMaxMiles ?? "open"} miles`,
+      `Benchmark price ${benchmark.benchmarkPricePence}; applied factor ${factor.toFixed(2)}`,
+      `Source note: ${benchmark.sourceNote}`,
+    ],
+  };
+}
+
+function estimatedInternalCostPence(params: {
+  settings: Record<string, number>;
+  vehicle: PricingVehicleClass | null;
+  route: RouteMetrics | null;
+  crew: CrewRecommendation;
+  metrics: InventoryMetrics;
+}): number | null {
+  const route = params.route;
+  if (!route) return null;
+  const labourRate = settingWithFallback(params.settings, "labour_hourly_rate", 20.95);
+  const labour = poundsToPence(labourRate * params.crew.movers * (params.crew.chargeableLabourMinutes / 60));
+  const vehicleBase = params.vehicle?.baseFeePence ?? poundsToPence(20);
+  const mileage = Math.round((params.vehicle?.perMilePence ?? 65) * route.distanceMiles);
+  const hourly = Math.round((params.vehicle?.perHourPence ?? poundsToPence(8)) * (params.crew.totalJobMinutes / 60));
+  const handling = poundsToPence(params.metrics.heavyOrSpecialItemCount * 8);
+  return Math.max(0, Math.round(labour + vehicleBase + mileage + hourly + handling));
+}
+
+function safetyIssue(params: {
+  finalTotalPence: number | null;
+  estimatedCostPence: number | null;
+  settings: Record<string, number>;
+}): string | null {
+  if (params.finalTotalPence == null || params.estimatedCostPence == null) return null;
+  const allowNegativeMargin = setting(params.settings, "allow_negative_margin") === 1;
+  const allowZeroMargin = setting(params.settings, "allow_zero_margin") === 1;
+  const minimumContribution = poundsToPence(setting(params.settings, "minimum_contribution") ?? 0);
+  const minimumMargin = setting(params.settings, "minimum_margin_percent") ?? setting(params.settings, "manual_review_min_margin_percent");
+  const contribution = params.finalTotalPence - params.estimatedCostPence;
+
+  if (!allowNegativeMargin && contribution < 0) {
+    return issue("SAFETY_REVIEW_REQUIRED", "Benchmark price is below independently estimated cost");
+  }
+  if (!allowZeroMargin && contribution === 0) {
+    return issue("SAFETY_REVIEW_REQUIRED", "Benchmark price leaves zero contribution");
+  }
+  if (contribution < minimumContribution) {
+    return issue("SAFETY_REVIEW_REQUIRED", "Benchmark price is below configured minimum contribution");
+  }
+  if (minimumMargin != null) {
+    const margin = params.finalTotalPence > 0 ? contribution / params.finalTotalPence : -1;
+    if (margin < minimumMargin) {
+      return issue("SAFETY_REVIEW_REQUIRED", "Benchmark price is below configured minimum margin");
+    }
+  }
+  return null;
 }
 
 export function calculateRemovalQuote(params: {
@@ -658,531 +896,168 @@ export function calculateRemovalQuote(params: {
   pricingVersion: PricingVersionSnapshot | null;
   promotionContext?: PromotionPricingContext | null;
   competitorContext?: CompetitorPricingContext | null;
-  now: Date;
-  quoteExpiresAt: Date;
+  now?: Date;
+  quoteExpiresAt?: Date;
 }): PricingResult {
-  const { input, inventory, route, pricingVersion, promotionContext, competitorContext, now, quoteExpiresAt } = params;
-  const reasons: string[] = [];
-  const customerBreakdown: PriceLine[] = [];
+  void params.promotionContext;
+  const now = params.now ?? new Date();
+  const settings = params.pricingVersion?.settings ?? {};
+  const quoteExpiresAt = params.quoteExpiresAt ?? new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const metrics = inventoryMetrics(params.inventory);
+  const roundedMetrics = roundMetrics(metrics);
+  const classification = classifyQuoteForPricing(params.input, params.inventory);
+  const criteria = benchmarkSelectionCriteriaForQuote(
+    params.input,
+    params.inventory,
+    params.route?.distanceMiles ?? null
+  );
+  const vehicleRecommendation = chooseVehicle(params.pricingVersion?.vehicleClasses ?? [], metrics);
+  const vehicle = selectedVehicle(params.pricingVersion?.vehicleClasses ?? [], vehicleRecommendation);
+  const inferredCrewCount = inferredCrew(params.input, params.inventory, metrics, vehicle);
+  const crew = crewRecommendation(params.input, params.inventory, metrics, params.route, vehicle);
+  const benchmark = params.competitorContext?.benchmark ?? null;
   const internalBreakdown: InternalPriceLine[] = [];
+  const customerBreakdown: PriceLine[] = [];
+  const reasons: string[] = [];
 
-  if (!pricingVersion) {
-    reasons.push("No active pricing version is published");
-  } else if (pricingVersion.status !== "ACTIVE") {
-    reasons.push("Pricing version is not active");
+  if (!params.pricingVersion) {
+    reasons.push(issue("MANUAL_REVIEW_REQUIRED", "No active pricing version is configured for operational cost controls"));
   }
 
-  if (input.customItems.length > 0) {
-    reasons.push("Custom inventory items require manual review");
-  }
+  const selectionIssue = benchmarkSelectionIssue(params.input, params.route, criteria, params.competitorContext, now);
+  if (selectionIssue) reasons.push(selectionIssue);
 
-  if (!route) {
-    reasons.push("Server route calculation is unavailable");
-  }
-
-  for (const item of inventory) {
-    if (!item.active) reasons.push(`Inventory item is inactive: ${item.name}`);
-    if (item.estimatedWeightKg == null) reasons.push(`Missing weight for inventory item: ${item.name}`);
-    if (item.estimatedVolumeM3 == null) reasons.push(`Missing volume for inventory item: ${item.name}`);
-    if (item.handlingMinutes == null) reasons.push(`Missing handling time for inventory item: ${item.name}`);
-  }
-
-  if (input.moveDate) {
-    const moveDate = new Date(`${input.moveDate}T12:00:00`);
-    if (Number.isNaN(moveDate.getTime()) || daysBetween(now, moveDate) < 0) {
-      reasons.push("Move date is in the past or invalid");
-    }
-  } else if (!input.flexibleDate) {
-    reasons.push("Move date is required unless flexible date is selected");
-  }
-
-  if (input.collection.postcode.replace(/\s+/g, "").toUpperCase() === input.delivery.postcode.replace(/\s+/g, "").toUpperCase()) {
-    if (input.collection.fullAddress.trim().toLowerCase() === input.delivery.fullAddress.trim().toLowerCase()) {
-      reasons.push("Collection and delivery addresses are identical");
-    }
-  }
-
-  const metrics = inventoryMetrics(inventory);
-  const versionSettings = pricingVersion?.settings ?? {};
-  const vehicleRecommendation = chooseVehicle(pricingVersion?.vehicleClasses ?? [], metrics, reasons);
-  const vehicle = selectedVehicle(pricingVersion?.vehicleClasses ?? [], vehicleRecommendation);
-  const vehicleUnits = vehicleUsageUnits(vehicle, vehicleRecommendation);
-  const vehiclePricingUnits = chargeableVehicleUnits(vehicleUnits, versionSettings);
-  const crew = crewRecommendation(input, inventory, metrics, route, vehicle, reasons);
-
-  if (vehicle) {
-    for (const item of inventory) {
-      if (item.vehicleRestrictions?.length && item.vehicleRestrictions.includes(vehicle.id)) {
-        reasons.push(`${item.name} cannot be moved in ${vehicle.name}`);
-      }
-    }
-  }
-
-  const baseCharge = baseChargeForQuote(input, metrics, versionSettings, reasons);
-  addLine(
-    customerBreakdown,
-    internalBreakdown,
-    "base_service_charge",
-    baseCharge.label,
-    poundsToPence(baseCharge.amountPounds),
-    baseCharge.explanation
-  );
-
-  if (baseCharge.usesOperationalVehicleAndLabour && vehicle) {
+  let customerMovePricePence: number | null = null;
+  if (!selectionIssue && benchmark) {
+    customerMovePricePence = Math.floor(benchmark.benchmarkPricePence * classification.appliedFactor);
     addLine(
       customerBreakdown,
       internalBreakdown,
-      "vehicle_charge",
-      vehicleUnits > 1
-        ? `${vehicle.name} capacity supplement x${formatVehicleUnits(vehiclePricingUnits)}`
-        : `${vehicle.name} vehicle`,
-      Math.round((vehicle.baseFeePence ?? 0) * vehiclePricingUnits),
-      vehicleUnits > 1
-        ? "Selected the largest active vehicle and priced additional capacity using the configured supplement instead of automatically charging a full duplicate vehicle"
-        : "Selected the smallest active vehicle that fits authoritative volume and payload"
+      "anyvan_benchmark_move_price",
+      classification.appliedFactor === ANYVAN_HOUSE_FACTOR
+        ? "Move price at 90% of AnyVan benchmark"
+        : "Move price at AnyVan benchmark",
+      customerMovePricePence,
+      classification.appliedFactor === ANYVAN_HOUSE_FACTOR
+        ? "Full-house customer move price is floor(AnyVan benchmark * 0.90), with no later rounding above that target"
+        : "Item-led customer move price is exactly 100% of the selected AnyVan benchmark"
     );
   }
 
-  const helperPrice = setting(versionSettings, "helper_price") ?? setting(versionSettings, "labour_hourly_rate") ?? 21.55;
-  const additionalMoverChargePence = poundsToPence(Math.max(0, crew.movers - 1) * helperPrice);
-  if (baseCharge.usesOperationalVehicleAndLabour) {
-    const labourHourlyRate = requiredSetting(versionSettings, "labour_hourly_rate", reasons);
-    const labourHours = crew.chargeableLabourMinutes / 60;
-    addLine(
+  if (!selectionIssue) {
+    optionalServiceLines({
+      input: params.input,
+      classification,
+      metrics,
+      settings,
+      benchmark,
+      crew,
+      inferredCrewCount,
       customerBreakdown,
       internalBreakdown,
-      "labour_charge",
-      `${crew.movers} mover${crew.movers === 1 ? "" : "s"}`,
-      poundsToPence(labourHourlyRate * crew.movers * labourHours),
-      "Crew size and chargeable time derived from handling time, stairs, carry distance, lift availability, heavy items, and vehicle limits"
-    );
-    if (additionalMoverChargePence > 0) {
-      addLine(
-        customerBreakdown,
-        internalBreakdown,
-        "additional_helper_charge",
-        `${crew.movers - 1} additional helper${crew.movers === 2 ? "" : "s"}`,
-        additionalMoverChargePence,
-        "Selected extra helpers use the configured helper price"
-      );
-    }
-  } else {
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      "additional_helper_charge",
-      `${crew.movers - 1} additional helper${crew.movers === 2 ? "" : "s"}`,
-      additionalMoverChargePence,
-      "Inventory-led base includes the van and driver; selected extra helpers use the configured helper price"
-    );
-  }
-
-  if (route) {
-    const distanceCharge = calculateDistanceCharge(route.distanceMiles, versionSettings);
-    const distanceChargePence = Math.round(poundsToPence(distanceCharge.total) * vehiclePricingUnits);
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      "distance_charge",
-      `Route distance (${route.distanceMiles.toFixed(1)} miles)`,
-      distanceChargePence,
-      vehicleUnits > 1
-        ? "Server-authoritative Mapbox distance priced from public marketplace distance bands and required capacity units"
-        : "Server-authoritative Mapbox distance priced from public marketplace distance bands"
-    );
-  }
-
-  const itemHandlingPerMinute = baseCharge.usesOperationalVehicleAndLabour
-    ? setting(versionSettings, "full_service_inventory_complexity_per_minute") ?? 0
-    : requiredSetting(versionSettings, "inventory_handling_per_minute", reasons);
-  addLine(
-    customerBreakdown,
-    internalBreakdown,
-    "inventory_handling_charge",
-    "Inventory handling",
-    poundsToPence(metrics.totalHandlingMinutes * itemHandlingPerMinute),
-    baseCharge.usesOperationalVehicleAndLabour
-      ? "Optional full-service complexity charge; labour already prices the core handling time"
-      : "Authoritative catalogue handling minutes multiplied by configured minute rate"
-  );
-
-  const extraInventory = extraInventoryCharge(input, metrics, versionSettings);
-  if (extraInventory) {
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      "extra_inventory_charge",
-      `Extra inventory (${extraInventory.extraUnits} item${extraInventory.extraUnits === 1 ? "" : "s"})`,
-      extraInventory.amountPence,
-      extraInventory.explanation
-    );
-  }
-
-  const accessUnit = requiredSetting(versionSettings, "access_difficulty_unit", reasons);
-  const accessChargePounds =
-    (accessDifficulty(input.collection) + accessDifficulty(input.delivery) + (input.additionalStop ? accessDifficulty(input.additionalStop) * 0.5 : 0)) * accessUnit;
-  addLine(
-    customerBreakdown,
-    internalBreakdown,
-    "access_charge",
-    "Access requirements",
-    poundsToPence(accessChargePounds),
-    "Floors, stairs, lift availability, parking, and carry distance converted to configured access units"
-  );
-
-  if (input.additionalStop) {
-    const stopFee = requiredSetting(versionSettings, "additional_stop_fee", reasons);
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      "additional_stop_charge",
-      "Additional stop",
-      poundsToPence(stopFee),
-      "Additional stop requested by customer"
-    );
-  }
-
-  const packingPence = packingChargePence(input.services, input.moveSize, metrics);
-  if (packingPence > 0) {
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      "packing_charge",
-      input.services.packing ? "Full packing service" : "Packing materials",
-      packingPence,
-      input.services.packing
-        ? "Premium full packing charged from GBP 145 plus GBP 3 per item after 20 items"
-        : "Premium packing materials charged at GBP 45"
-    );
-  }
-
-  const serviceCount = optionalServiceUnits(input.services);
-  if (serviceCount > 0) {
-    const serviceUnit = requiredSetting(versionSettings, "optional_service_unit", reasons);
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      "optional_services_charge",
-      "Additional services",
-      poundsToPence(serviceCount * serviceUnit),
-      "Selected optional services multiplied by configured service unit"
-    );
-  }
-
-  const furnitureHelpItems =
-    serviceItemCount(input.services, "dismantlingItems") +
-    serviceItemCount(input.services, "reassemblyItems");
-  if (furnitureHelpItems > 0) {
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      "assembly_dismantling_charge",
-      "Dismantling / assembly",
-      poundsToPence(furnitureHelpItems * 10),
-      "Dismantling and assembly charged at GBP 10 per selected item"
-    );
-  }
-
-  const heavyItemUnit = requiredSetting(versionSettings, "heavy_item_unit", reasons);
-  addLine(
-    customerBreakdown,
-    internalBreakdown,
-    "heavy_and_special_item_charge",
-    "Heavy or specialist handling",
-    poundsToPence(metrics.heavyOrSpecialItemCount * heavyItemUnit),
-    "Heavy, specialist, and two-person items resolved from the server catalogue"
-  );
-
-  const moveDate = input.moveDate ? new Date(`${input.moveDate}T12:00:00`) : null;
-  let scheduleAdjustmentPence = 0;
-  let scheduleAdjustmentLabel = "";
-  let scheduleAdjustmentExplanation = "";
-  if (moveDate) {
-    const daysOut = daysBetween(now, moveDate);
-    if (daysOut === 0 || input.sameDay) {
-      scheduleAdjustmentPence = poundsToPence(100);
-      scheduleAdjustmentLabel = "Same-day surcharge";
-      scheduleAdjustmentExplanation = "Fixed same-day booking surcharge";
-    } else if (daysOut === 1) {
-      scheduleAdjustmentPence = poundsToPence(77);
-      scheduleAdjustmentLabel = "Next-day surcharge";
-      scheduleAdjustmentExplanation = "Fixed next-day booking surcharge";
-    } else if (daysOut === 2 || input.urgent) {
-      scheduleAdjustmentPence = poundsToPence(50);
-      scheduleAdjustmentLabel = "Short-notice surcharge";
-      scheduleAdjustmentExplanation = "Fixed third-day booking surcharge";
-    }
-  }
-
-  if (scheduleAdjustmentPence > 0) {
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      "schedule_surcharge",
-      scheduleAdjustmentLabel,
-      scheduleAdjustmentPence,
-      scheduleAdjustmentExplanation
-    );
-  }
-
-  const regionalCharge = requiredSetting(versionSettings, "regional_charge", reasons);
-  addLine(
-    customerBreakdown,
-    internalBreakdown,
-    "regional_charge",
-    "Regional operating adjustment",
-    poundsToPence(regionalCharge),
-    "Configured regional adjustment for the active pricing version"
-  );
-
-  const parkingOrTollCharge = input.collection.parking === "paid" || input.delivery.parking === "paid"
-    ? requiredSetting(versionSettings, "parking_or_toll_charge", reasons)
-    : 0;
-  addLine(
-    customerBreakdown,
-    internalBreakdown,
-    "parking_or_toll_charge",
-    "Parking or toll allowance",
-    poundsToPence(parkingOrTollCharge),
-    "Applied only when paid parking is declared"
-  );
-
-  const subtotalBeforeContingency = customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
-  const contingencyPercent = requiredSetting(versionSettings, "contingency_percent", reasons);
-  addLine(
-    customerBreakdown,
-    internalBreakdown,
-    "contingency_charge",
-    "Operational contingency",
-    Math.round(subtotalBeforeContingency * contingencyPercent),
-    "Configured contingency percentage applied to operational subtotal"
-  );
-
-  const preDiscountTotalPence = customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
-  const discount = Math.max(0, requiredSetting(versionSettings, "permitted_discount", reasons));
-  addLine(
-    customerBreakdown,
-    internalBreakdown,
-    "permitted_discounts",
-    "Permitted discount",
-    -poundsToPence(discount),
-    "Only configured permitted discounts can reduce the price"
-  );
-
-  const minBookingAmount = poundsToPence(requiredSetting(versionSettings, "minimum_booking_amount", reasons));
-  const roundingPolicy = poundsToPence(requiredSetting(versionSettings, "rounding_increment", reasons));
-  const roundingStrategy = setting(versionSettings, "rounding_strategy");
-  const estimatedCostPercent = requiredSetting(versionSettings, "internal_cost_percent", reasons);
-  const globalMinimumContribution = poundsToPence(setting(versionSettings, "minimum_contribution") ?? 0);
-  const globalMinimumMargin = setting(versionSettings, "minimum_margin_percent") ?? setting(versionSettings, "manual_review_min_margin_percent");
-  const subtotalBeforeCompetitor = customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
-  const protectedCompetitorLineKeys = new Set([
-    "schedule_surcharge",
-    "vehicle_charge",
-    "labour_charge",
-    "additional_helper_charge",
-    "inventory_handling_charge",
-    "packing_charge",
-    "optional_services_charge",
-    "assembly_dismantling_charge",
-    "heavy_and_special_item_charge",
-    "extra_inventory_charge",
-  ]);
-  const competitorProtectedAddonPence = customerBreakdown
-    .filter((line) => protectedCompetitorLineKeys.has(line.key))
-    .reduce((sum, line) => sum + Math.max(0, line.amountPence), 0);
-  const competitorEligibleSubtotalPence = Math.max(0, subtotalBeforeCompetitor - competitorProtectedAddonPence);
-  const estimatedCostForCompetitor = Math.round(Math.max(competitorEligibleSubtotalPence, minBookingAmount) * estimatedCostPercent);
-  const competitorResult = evaluateCompetitorBenchmark({
-    input,
-    routeMileage: route?.distanceMiles ?? null,
-    normalOperationalPricePence: competitorEligibleSubtotalPence,
-    minimumCustomerPricePence: minBookingAmount,
-    estimatedCostPence: estimatedCostForCompetitor,
-    globalMinimumContributionPence: globalMinimumContribution,
-    globalMinimumMarginPercent: globalMinimumMargin,
-    now,
-  }, competitorContext);
-  if (competitorResult.applied && competitorResult.discountPence > 0) {
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      "competitor_benchmark_adjustment",
-      competitorResult.customerLabel ?? "Online booking price",
-      -competitorResult.discountPence,
-      "Admin-configured competitor benchmark target applied server-side after safe minimum, contribution, and margin checks"
-    );
-  }
-  internalBreakdown.push(...competitorResult.internalNotes.map((note, index) => ({
-    key: `competitor_note_${index + 1}`,
-    label: "Competitor note",
-    amountPence: 0,
-    explanation: note,
-  })));
-
-  const subtotalBeforePromotions = customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
-  const estimatedCostForProtection = Math.round(Math.max(subtotalBeforePromotions, minBookingAmount) * estimatedCostPercent);
-  const promotionResult = evaluatePromotions({
-    input,
-    routeMileage: route?.distanceMiles ?? null,
-    totalVolumeM3: metrics.totalVolumeM3,
-    totalJobMinutes: crew.totalJobMinutes,
-    movers: crew.movers,
-    vehicleClassId: vehicle?.id ?? null,
-    vehicleName: vehicle?.name ?? null,
-    heavyOrSpecialItemCount: metrics.heavyOrSpecialItemCount,
-    subtotalPence: subtotalBeforePromotions,
-    estimatedCostPence: estimatedCostForProtection,
-    now,
-  }, promotionContext);
-  for (const applied of promotionResult.applied) {
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      `promotion_${applied.source}_${applied.id}`,
-      applied.customerLabel,
-      -applied.discountPence,
-      `${applied.source === "code" ? "Promotion code" : "Automatic campaign"} applied server-side after eligibility, budget, and margin checks`
-    );
-  }
-  internalBreakdown.push(...promotionResult.internalNotes.map((note, index) => ({
-    key: `promotion_note_${index + 1}`,
-    label: "Promotion note",
-    amountPence: 0,
-    explanation: note,
-  })));
-  reasons.push(...promotionResult.manualReviewReasons);
-
-  const rawTotal = customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
-  const competitorSafeMinimumTotalPence = competitorResult.applied
-    ? Math.max(
-        minBookingAmount,
-        competitorResult.safeMinimumPricePence ?? minBookingAmount
-      ) + competitorProtectedAddonPence
-    : minBookingAmount;
-  const withMinimum = Math.max(rawTotal, competitorSafeMinimumTotalPence);
-  let finalTotalPence = applyCustomerRounding({
-    valuePence: withMinimum,
-    minimumPence: competitorSafeMinimumTotalPence,
-    incrementPence: Math.max(1, roundingPolicy),
-    strategy: roundingStrategy,
-  });
-  finalTotalPence = applyCompetitorPriceCeiling(finalTotalPence, competitorResult, minBookingAmount, competitorProtectedAddonPence);
-  const originalTotalPence = applyCustomerRounding({
-    valuePence: Math.max(preDiscountTotalPence, minBookingAmount),
-    minimumPence: minBookingAmount,
-    incrementPence: Math.max(1, roundingPolicy),
-    strategy: roundingStrategy,
-  });
-  let roundingAdjustmentPence = 0;
-
-  if (finalTotalPence <= 0) {
-    reasons.push("Pricing invariant failed: final total must be positive");
-  }
-
-  if (setting(versionSettings, "vat_rate") != null && setting(versionSettings, "vat_enabled") === 1) {
-    const vatRate = requiredSetting(versionSettings, "vat_rate", reasons);
-    const vatAmount = Math.round(finalTotalPence * vatRate);
-    addLine(
-      customerBreakdown,
-      internalBreakdown,
-      "vat",
-      "VAT",
-      vatAmount,
-      "VAT applied because active business pricing explicitly enables VAT"
-    );
-    finalTotalPence = applyCustomerRounding({
-      valuePence: finalTotalPence + vatAmount,
-      minimumPence: competitorSafeMinimumTotalPence + vatAmount,
-      incrementPence: Math.max(1, roundingPolicy),
-      strategy: roundingStrategy,
     });
-    finalTotalPence = applyCompetitorPriceCeiling(
-      finalTotalPence,
-      competitorResult,
-      minBookingAmount,
-      competitorProtectedAddonPence + vatAmount
-    );
   }
 
-  const visibleTotalBeforeRounding = customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
-  roundingAdjustmentPence = finalTotalPence - visibleTotalBeforeRounding;
-  addLine(
-    customerBreakdown,
-    internalBreakdown,
-    "rounding_adjustment",
-    roundingAdjustmentPence > 0 ? "Rounding adjustment" : "Rounded price",
-    roundingAdjustmentPence,
-    "Customer total reconciled to the configured rounding policy without changing the underlying pricing inputs"
-  );
-
-  const estimatedCostPence = Math.round(finalTotalPence * estimatedCostPercent);
-  const grossProfitPence = finalTotalPence - estimatedCostPence;
-  const contributionPence = grossProfitPence;
-  const grossMarginPercentage = finalTotalPence > 0 ? grossProfitPence / finalTotalPence : null;
-  const lowMarginThreshold = setting(versionSettings, "manual_review_min_margin_percent");
-  if (lowMarginThreshold != null && grossMarginPercentage != null && grossMarginPercentage < lowMarginThreshold) {
-    reasons.push("Gross margin is below configured manual-review threshold");
-  }
-  const highQuoteThreshold = setting(versionSettings, "manual_review_high_quote_amount");
-  if (highQuoteThreshold != null && finalTotalPence >= poundsToPence(highQuoteThreshold)) {
-    reasons.push("Quote exceeds configured high-value manual-review threshold");
-  }
+  const preSafetyTotalPence = selectionIssue
+    ? null
+    : customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
+  const estimatedCostPence = estimatedInternalCostPence({
+    settings,
+    vehicle,
+    route: params.route,
+    crew,
+    metrics,
+  });
+  const safety = safetyIssue({
+    finalTotalPence: preSafetyTotalPence,
+    estimatedCostPence,
+    settings,
+  });
+  if (safety) reasons.push(safety);
 
   const uniqueReasons = Array.from(new Set(reasons));
-  const status = uniqueReasons.length > 0 ? "MANUAL_REVIEW" : "FIXED";
-  const competitorDiscountTotalPence = competitorResult.applied ? competitorResult.discountPence : 0;
-  const customerDiscountTotalPence = competitorDiscountTotalPence + promotionResult.discountTotalPence;
-  const customerDiscountLabel = promotionResult.customerLabel ?? competitorResult.customerLabel;
+  const status: PricingResult["status"] = uniqueReasons.length > 0 ? "MANUAL_REVIEW" : "FIXED";
+  const finalTotalPence = status === "FIXED" ? preSafetyTotalPence : null;
+  const grossProfitPence = finalTotalPence != null && estimatedCostPence != null
+    ? finalTotalPence - estimatedCostPence
+    : null;
+  const grossMarginPercentage = finalTotalPence && grossProfitPence != null
+    ? grossProfitPence / finalTotalPence
+    : null;
+  const benchmarkDiscountPence =
+    status === "FIXED" && benchmark && customerMovePricePence != null
+      ? Math.max(0, benchmark.benchmarkPricePence - customerMovePricePence)
+      : 0;
+  const originalTotalPence =
+    status === "FIXED" && benchmark
+      ? benchmark.benchmarkPricePence + customerBreakdown
+          .filter((line) => line.key !== "anyvan_benchmark_move_price")
+          .reduce((sum, line) => sum + line.amountPence, 0)
+      : null;
+  const competitor = competitorSummary({
+    benchmark,
+    context: params.competitorContext,
+    classification,
+    customerMovePricePence,
+    finalTotalPence,
+    unableReason: uniqueReasons[0] ?? null,
+  });
+
+  internalBreakdown.push({
+    key: "pricing_classification",
+    label: "Pricing classification",
+    amountPence: 0,
+    explanation: JSON.stringify({
+      kind: classification.kind,
+      requestedMoveSize: classification.requestedMoveSize,
+      effectivePropertySize: classification.effectivePropertySize,
+      benchmarkPropertySizes: classification.benchmarkPropertySizes,
+      appliedFactor: classification.appliedFactor,
+      packingIncluded: classification.packingIncluded,
+      auditInput: classification.auditInput,
+    }),
+  });
+  if (estimatedCostPence != null) {
+    internalBreakdown.push({
+      key: "estimated_internal_cost",
+      label: "Estimated internal cost",
+      amountPence: estimatedCostPence,
+      explanation: "Internal cost is estimated independently from the benchmark customer price using crew, route, vehicle and handling inputs",
+    });
+  }
 
   return {
-    pricingVersionId: pricingVersion?.id ?? null,
-    pricingVersionNumber: pricingVersion?.version ?? null,
+    pricingVersionId: params.pricingVersion?.id ?? null,
+    pricingVersionNumber: params.pricingVersion?.version ?? null,
     status,
-    finalTotalPence: status === "FIXED" ? finalTotalPence : null,
+    finalTotalPence,
     customerBreakdown: status === "FIXED" ? customerBreakdown : [],
     internalBreakdown,
-    inventoryMetrics: {
-      ...metrics,
-      totalVolumeM3: Math.round(metrics.totalVolumeM3 * 100) / 100,
-      totalWeightKg: Math.round(metrics.totalWeightKg * 10) / 10,
-    },
+    inventoryMetrics: roundedMetrics,
     vehicleRecommendation,
     crewRecommendation: crew,
     manualReviewReasons: uniqueReasons,
     customerSummary: {
-      routeMileage: route?.distanceMiles ?? null,
+      routeMileage: params.route?.distanceMiles ?? null,
       estimatedDurationMinutes: crew.totalJobMinutes || null,
       quoteExpiresAt: quoteExpiresAt.toISOString(),
-      originalTotalPence: status === "FIXED" ? originalTotalPence : null,
-      discountTotalPence: status === "FIXED" ? customerDiscountTotalPence : 0,
-      promotionLabel: status === "FIXED" ? customerDiscountLabel : null,
+      originalTotalPence,
+      discountTotalPence: status === "FIXED" ? benchmarkDiscountPence : 0,
+      promotionLabel: status === "FIXED" ? competitor.customerLabel : null,
     },
     promotionSummary: {
-      applied: status === "FIXED" ? promotionResult.applied.map((applied) => ({
-        source: applied.source,
-        id: applied.id,
-        code: applied.code,
-        type: applied.type,
-        customerLabel: applied.customerLabel,
-        discountPence: applied.discountPence,
-      })) : [],
-      discountTotalPence: status === "FIXED" ? promotionResult.discountTotalPence : 0,
-      customerLabel: status === "FIXED" ? promotionResult.customerLabel : null,
+      applied: [],
+      discountTotalPence: 0,
+      customerLabel: null,
     },
-    competitorSummary: status === "FIXED" ? competitorResult : {
-      ...competitorResult,
-      applied: false,
-      discountPence: 0,
-      finalPricePence: null,
-    },
+    competitorSummary: competitor,
     internalSummary: {
-      estimatedCostPence: status === "FIXED" ? estimatedCostPence : null,
-      grossProfitPence: status === "FIXED" ? grossProfitPence : null,
-      grossMarginPercentage: status === "FIXED" ? grossMarginPercentage : null,
-      contributionPence: status === "FIXED" ? contributionPence : null,
-      preDiscountTotalPence: status === "FIXED" ? preDiscountTotalPence : null,
-      roundingAdjustmentPence: status === "FIXED" ? roundingAdjustmentPence : null,
+      estimatedCostPence,
+      grossProfitPence,
+      grossMarginPercentage,
+      contributionPence: grossProfitPence,
+      preDiscountTotalPence: originalTotalPence,
+      roundingAdjustmentPence: 0,
       appliedRuleExplanations: internalBreakdown.map((line) => line.explanation),
     },
   };

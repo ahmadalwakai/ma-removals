@@ -3,12 +3,12 @@ import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { parseItemWeightKg } from "@/lib/item-pricing";
 import { notifyManualReviewQuote } from "@/lib/notifications";
-import { calculateRemovalQuote, normaliseQuoteInputForPricing, type ResolvedInventoryItem } from "@/lib/pricing/domain";
+import { calculateRemovalQuote, normaliseQuoteInputForPricing, type ResolvedInventoryItem, type RouteMetrics } from "@/lib/pricing/domain";
 import { getCompetitorPricingContext } from "@/lib/pricing/competitor-repository";
 import { getPromotionPricingContext } from "@/lib/pricing/promotion-repository";
 import { getActivePricingVersion } from "@/lib/pricing/version-repository";
 import { calculateServerRoute } from "@/lib/routing/mapbox";
-import type { CreateQuoteRequest } from "@/lib/quotes/schemas";
+import type { AddressAccessInput, AdditionalServicesInput, CreateQuoteRequest } from "@/lib/quotes/schemas";
 
 export class QuoteInputError extends Error {
   status = 400;
@@ -173,8 +173,28 @@ async function resolveQuoteReference(requestedReference: string | undefined, now
   return generateQuoteReference(now);
 }
 
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => [key, stableValue(entry)])
+  );
+}
+
 function stableHash(value: unknown): string {
-  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return crypto.createHash("sha256").update(JSON.stringify(stableValue(value))).digest("hex");
+}
+
+function routeForPricingHash(route: unknown): unknown {
+  if (!route || typeof route !== "object") return null;
+  const record = route as Partial<RouteMetrics>;
+  return {
+    distanceMiles: record.distanceMiles ?? null,
+    durationMinutes: record.durationMinutes ?? null,
+    routeHash: record.routeHash ?? null,
+  };
 }
 
 function quoteExpiry(versionSettings: Record<string, number>, now: Date): Date {
@@ -189,6 +209,52 @@ function parseMoveDate(input: CreateQuoteRequest): Date | null {
   if (!input.moveDate) return null;
   const date = new Date(`${input.moveDate}T12:00:00`);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function sortedInventoryInput(input: CreateQuoteRequest): CreateQuoteRequest["inventory"] {
+  return [...input.inventory].sort((a, b) => (
+    `${a.itemId}:${a.room}:${a.quantity}`.localeCompare(`${b.itemId}:${b.room}:${b.quantity}`)
+  ));
+}
+
+function sortedCustomItems(input: CreateQuoteRequest) {
+  return input.customItems
+    .map((item) => ({ ...item, manualReviewRequired: true }))
+    .sort((a, b) => `${a.name}:${a.room}:${a.quantity}`.localeCompare(`${b.name}:${b.room}:${b.quantity}`));
+}
+
+function buildNormalisedInputForStorage(
+  input: CreateQuoteRequest,
+  addresses: AddressAccessInput[]
+) {
+  return {
+    moveType: input.moveType,
+    moveSize: input.moveSize,
+    moveDate: input.moveDate,
+    earliestDate: input.earliestDate,
+    latestDate: input.latestDate,
+    arrivalWindow: input.arrivalWindow,
+    flexibleDate: input.flexibleDate,
+    flexibleTime: input.flexibleTime,
+    exactTime: input.exactTime,
+    sameDay: input.sameDay,
+    urgent: input.urgent,
+    preferredMovers: input.preferredMovers ?? null,
+    stops: addresses.map((access, index) => ({
+      role: index === 0 ? "collection" : index === addresses.length - 1 ? "delivery" : "additional-stop",
+      access,
+    })),
+    inventory: sortedInventoryInput(input),
+    customItems: sortedCustomItems(input),
+    services: input.services,
+    customerNote: input.customer.notes ?? "",
+    promotionCode: input.promotionCode,
+    sourceChannel: input.sourceChannel,
+    utmSource: input.utmSource,
+    utmMedium: input.utmMedium,
+    utmCampaign: input.utmCampaign,
+    referralCode: input.referralCode,
+  };
 }
 
 function estimateItemVolumeM3(item: {
@@ -312,6 +378,9 @@ export async function resolveInventoryForQuote(input: CreateQuoteRequest): Promi
   reasons: string[];
 }> {
   const reasons: string[] = [];
+  if (input.customItems.length > 0) {
+    reasons.push("MANUAL_REVIEW_REQUIRED: Custom inventory items require server-reviewed catalogue dimensions before automatic pricing");
+  }
   const ids = Array.from(new Set(
     input.inventory
       .map((item) => item.itemId)
@@ -437,7 +506,11 @@ export async function createQuote(input: CreateQuoteRequest): Promise<CustomerQu
     promotion.context.allowZeroMargin = pricingVersion.settings.allow_zero_margin === 1;
     promotion.context.allowNegativeMargin = pricingVersion.settings.allow_negative_margin === 1;
   }
-  const competitor = await getCompetitorPricingContext(pricingInput, routeResult.route?.distanceMiles ?? null);
+  const competitor = await getCompetitorPricingContext(
+    pricingInput,
+    routeResult.route?.distanceMiles ?? null,
+    inventoryResult.items,
+  );
 
   const calculated = calculateRemovalQuote({
     input: pricingInput,
@@ -456,37 +529,13 @@ export async function createQuote(input: CreateQuoteRequest): Promise<CustomerQu
     ...calculated.manualReviewReasons,
   ]));
   const status = manualReviewReasons.length > 0 ? "MANUAL_REVIEW" : calculated.status;
-  const normalisedInput = {
-    moveType: pricingInput.moveType,
-    moveSize: pricingInput.moveSize,
-    moveDate: pricingInput.moveDate,
-    earliestDate: pricingInput.earliestDate,
-    latestDate: pricingInput.latestDate,
-    arrivalWindow: pricingInput.arrivalWindow,
-    flexibleDate: pricingInput.flexibleDate,
-    flexibleTime: pricingInput.flexibleTime,
-    exactTime: pricingInput.exactTime,
-    sameDay: pricingInput.sameDay,
-    urgent: pricingInput.urgent,
-    stops: addresses.map((access, index) => ({
-      role: index === 0 ? "collection" : index === addresses.length - 1 ? "delivery" : "additional-stop",
-      access,
-    })),
-    inventory: pricingInput.inventory,
-    customItems: pricingInput.customItems.map((item) => ({ ...item, manualReviewRequired: true })),
-    services: pricingInput.services,
-    customerNote: pricingInput.customer.notes ?? "",
-    promotionCode: pricingInput.promotionCode,
-    sourceChannel: pricingInput.sourceChannel,
-    utmSource: pricingInput.utmSource,
-    utmMedium: pricingInput.utmMedium,
-    utmCampaign: pricingInput.utmCampaign,
-    referralCode: pricingInput.referralCode,
-  };
+  const normalisedInput = buildNormalisedInputForStorage(pricingInput, addresses);
   const serverInputHash = stableHash({
     normalisedInput,
-    route: routeResult.route,
-    inventory: inventoryResult.items,
+    route: routeForPricingHash(routeResult.route),
+    inventory: [...inventoryResult.items].sort((a, b) => (
+      `${a.id}:${a.room}:${a.quantity}`.localeCompare(`${b.id}:${b.room}:${b.quantity}`)
+    )),
     pricingVersion: pricingVersion?.id ?? null,
     competitorContext: competitor,
   });
@@ -628,6 +677,276 @@ export async function createQuote(input: CreateQuoteRequest): Promise<CustomerQu
   }
 
   return publicResponseFromQuote(quote);
+}
+
+type JsonRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function stopFromNormalised(normalised: unknown, role: string): AddressAccessInput | null {
+  const stop = asArray(asRecord(normalised).stops).find((entry) => asRecord(entry).role === role);
+  const access = asRecord(asRecord(stop).access);
+  if (!stringValue(access.fullAddress) || !stringValue(access.postcode)) return null;
+  if (typeof access.lat !== "number" || typeof access.lng !== "number") return null;
+  return access as unknown as AddressAccessInput;
+}
+
+function inventoryFromNormalised(normalised: unknown): CreateQuoteRequest["inventory"] {
+  return asArray(asRecord(normalised).inventory).flatMap((entry) => {
+    const item = asRecord(entry);
+    const itemId = stringValue(item.itemId);
+    if (!itemId) return [];
+    const quantity = typeof item.quantity === "number" && Number.isFinite(item.quantity)
+      ? Math.max(1, Math.floor(item.quantity))
+      : 1;
+    const room = stringValue(item.room) ?? "other";
+    return [{
+      itemId,
+      quantity,
+      room: room as CreateQuoteRequest["inventory"][number]["room"],
+    }];
+  });
+}
+
+function dateString(value: unknown): string | null {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
+function quoteInputFromStoredQuote(quote: {
+  normalisedInput: unknown;
+  selectedServices: unknown;
+  moveType: string;
+  moveSize: string | null;
+  moveDate: Date | null;
+  earliestDate: Date | null;
+  latestDate: Date | null;
+  arrivalWindow: string | null;
+  flexibleDate: boolean;
+  flexibleTime: boolean;
+  exactTime: boolean;
+  sameDay: boolean;
+  urgent: boolean;
+  customerName: string | null;
+  customerEmail: string | null;
+  customerPhone: string | null;
+  companyName: string | null;
+  preferredContactMethod: string | null;
+  marketingConsent: boolean;
+  bookingConsentAccepted: boolean;
+  termsAccepted: boolean;
+  sourceChannel: string | null;
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  referralCode: string | null;
+}): CreateQuoteRequest | null {
+  const normalised = asRecord(quote.normalisedInput);
+  const collection = stopFromNormalised(normalised, "collection");
+  const delivery = stopFromNormalised(normalised, "delivery");
+  const additionalStop = stopFromNormalised(normalised, "additional-stop");
+  if (!collection || !delivery) return null;
+
+  const moveDate =
+    dateString(normalised.moveDate) ??
+    quote.moveDate?.toISOString().slice(0, 10) ??
+    null;
+  const earliestDate =
+    dateString(normalised.earliestDate) ??
+    quote.earliestDate?.toISOString().slice(0, 10) ??
+    null;
+  const latestDate =
+    dateString(normalised.latestDate) ??
+    quote.latestDate?.toISOString().slice(0, 10) ??
+    null;
+  const arrivalWindow =
+    quote.arrivalWindow === "afternoon" || quote.arrivalWindow === "evening"
+      ? quote.arrivalWindow
+      : quote.arrivalWindow === "morning"
+        ? "morning"
+        : null;
+  const preferredContactMethod =
+    quote.preferredContactMethod === "phone" || quote.preferredContactMethod === "sms"
+      ? quote.preferredContactMethod
+      : "email";
+
+  return {
+    moveType: quote.moveType as CreateQuoteRequest["moveType"],
+    moveSize: (quote.moveSize ?? normalised.moveSize) as CreateQuoteRequest["moveSize"],
+    collection,
+    delivery,
+    additionalStop,
+    moveDate,
+    earliestDate,
+    latestDate,
+    arrivalWindow,
+    flexibleDate: quote.flexibleDate,
+    flexibleTime: quote.flexibleTime,
+    exactTime: quote.exactTime,
+    sameDay: quote.sameDay,
+    urgent: quote.urgent,
+    preferredMovers: typeof normalised.preferredMovers === "number" ? normalised.preferredMovers : undefined,
+    inventory: inventoryFromNormalised(normalised),
+    customItems: [],
+    services: {
+      ...asRecord(normalised.services),
+      ...asRecord(quote.selectedServices),
+    } as AdditionalServicesInput,
+    customer: {
+      fullName: quote.customerName ?? "Customer",
+      email: quote.customerEmail ?? "customer@example.com",
+      phone: quote.customerPhone ?? "07123456789",
+      notes: stringValue(normalised.customerNote) ?? "",
+      companyName: quote.companyName ?? "",
+      preferredContactMethod,
+      marketingConsent: quote.marketingConsent,
+      bookingConsentAccepted: true,
+      termsAccepted: true,
+    },
+    promotionCode: stringValue(normalised.promotionCode) ?? undefined,
+    sourceChannel: quote.sourceChannel ?? "web",
+    utmSource: quote.utmSource ?? undefined,
+    utmMedium: quote.utmMedium ?? undefined,
+    utmCampaign: quote.utmCampaign ?? undefined,
+    referralCode: quote.referralCode ?? undefined,
+  };
+}
+
+export async function verifyQuoteForCheckout(reference: string): Promise<{
+  ok: true;
+  quote: Awaited<ReturnType<typeof db.quote.findUnique>>;
+  finalTotalPence: number;
+} | {
+  ok: false;
+  status: number;
+  code: string;
+  reasons: string[];
+}> {
+  const quote = await db.quote.findUnique({ where: { reference } });
+  if (!quote) {
+    return { ok: false, status: 404, code: "QUOTE_NOT_FOUND", reasons: ["Quote not found"] };
+  }
+  if (quote.status === "CONSUMED") {
+    return { ok: false, status: 409, code: "QUOTE_CONSUMED", reasons: ["Quote has already been booked"] };
+  }
+  if (quote.status !== "FIXED" && quote.status !== "ACCEPTED") {
+    return {
+      ok: false,
+      status: 422,
+      code: "MANUAL_REVIEW_REQUIRED",
+      reasons: ["MANUAL_REVIEW_REQUIRED: This quote requires manual review before checkout"],
+    };
+  }
+  if (quote.expiresAt.getTime() <= Date.now()) {
+    await db.quote.update({ where: { id: quote.id }, data: { status: "EXPIRED" } });
+    return {
+      ok: false,
+      status: 410,
+      code: "BENCHMARK_EXPIRED",
+      reasons: ["BENCHMARK_EXPIRED: Quote has expired before checkout"],
+    };
+  }
+
+  const input = quoteInputFromStoredQuote(quote);
+  if (!input) {
+    return {
+      ok: false,
+      status: 422,
+      code: "MANUAL_REVIEW_REQUIRED",
+      reasons: ["MANUAL_REVIEW_REQUIRED: Stored quote inputs are incomplete"],
+    };
+  }
+
+  const addresses = [
+    input.collection,
+    ...(input.additionalStop ? [input.additionalStop] : []),
+    input.delivery,
+  ];
+  const pricingVersion = await getActivePricingVersion();
+  const [inventoryResult, routeResult] = await Promise.all([
+    resolveInventoryForQuote(input),
+    calculateServerRoute(addresses),
+  ]);
+  const pricingInput = normaliseQuoteInputForPricing(input, inventoryResult.items);
+  const promotion = await getPromotionPricingContext(pricingInput);
+  const competitor = await getCompetitorPricingContext(
+    pricingInput,
+    routeResult.route?.distanceMiles ?? null,
+    inventoryResult.items,
+  );
+  const calculated = calculateRemovalQuote({
+    input: pricingInput,
+    inventory: inventoryResult.items,
+    route: routeResult.route,
+    pricingVersion,
+    promotionContext: promotion.context,
+    competitorContext: competitor,
+    now: new Date(),
+    quoteExpiresAt: quote.expiresAt,
+  });
+  const normalisedInput = buildNormalisedInputForStorage(pricingInput, addresses);
+  const serverInputHash = stableHash({
+    normalisedInput,
+    route: routeForPricingHash(routeResult.route),
+    inventory: [...inventoryResult.items].sort((a, b) => (
+      `${a.id}:${a.room}:${a.quantity}`.localeCompare(`${b.id}:${b.room}:${b.quantity}`)
+    )),
+    pricingVersion: pricingVersion?.id ?? null,
+    competitorContext: competitor,
+  });
+  const reasons = Array.from(new Set([
+    ...inventoryResult.reasons,
+    ...routeResult.reasons,
+    ...calculated.manualReviewReasons,
+  ]));
+  if (reasons.length > 0 || calculated.status !== "FIXED" || calculated.finalTotalPence == null) {
+    return {
+      ok: false,
+      status: 422,
+      code: "MANUAL_REVIEW_REQUIRED",
+      reasons,
+    };
+  }
+  if (quote.serverInputHash !== serverInputHash) {
+    return {
+      ok: false,
+      status: 409,
+      code: "STALE_QUOTE",
+      reasons: ["STALE_QUOTE: Normalized pricing inputs changed since the quote was created"],
+    };
+  }
+  if (quote.finalTotalPence !== calculated.finalTotalPence) {
+    return {
+      ok: false,
+      status: 409,
+      code: "STALE_QUOTE",
+      reasons: ["STALE_QUOTE: Authoritative benchmark total changed since the quote was created"],
+    };
+  }
+  if (quote.competitorBenchmarkId !== calculated.competitorSummary.benchmarkId) {
+    return {
+      ok: false,
+      status: 409,
+      code: "STALE_QUOTE",
+      reasons: ["STALE_QUOTE: Active benchmark selection changed since the quote was created"],
+    };
+  }
+  return {
+    ok: true,
+    quote,
+    finalTotalPence: calculated.finalTotalPence,
+  };
 }
 
 export async function getQuoteForCustomer(reference: string): Promise<CustomerQuoteResponse | null> {

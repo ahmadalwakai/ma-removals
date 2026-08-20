@@ -8,11 +8,7 @@ import { createTrackingEvent, recordStatusChange } from "@/lib/tracking-utils";
 import { sendEmail } from "@/lib/email-sender";
 import { bookingConfirmedHtml } from "@/lib/emails/templates";
 import { confirmBookingFromQuoteSchema } from "@/lib/quotes/schemas";
-import {
-  isScotlandAddress,
-  SCOTLAND_PICKUP_MESSAGE,
-} from "@/lib/service-area";
-import type { BookingFormState } from "@/types/booking";
+import { verifyQuoteForCheckout } from "@/lib/quotes/service";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "");
 
@@ -85,7 +81,6 @@ export async function POST(req: NextRequest) {
       quoteReference?: string;
       idempotencyKey?: string;
       paymentIntentId: string;
-      state: BookingFormState;
     };
     if (body.quoteReference) {
       const parsed = confirmBookingFromQuoteSchema.safeParse(body);
@@ -151,7 +146,19 @@ export async function POST(req: NextRequest) {
       if (quote.finalTotalPence == null || quote.finalTotalPence <= 0) {
         return NextResponse.json({ error: "Quote amount is unavailable" }, { status: 422 });
       }
-      if (pi.amount !== quote.finalTotalPence) {
+      const verification = await verifyQuoteForCheckout(parsed.data.quoteReference);
+      if (!verification.ok) {
+        await releaseQuotePromotionReservations({
+          quoteReference: parsed.data.quoteReference,
+          reason: `booking_confirm_blocked_${verification.code.toLowerCase()}`,
+          paymentIntentId: pi.id,
+        });
+        return NextResponse.json(
+          { error: verification.code, reasons: verification.reasons },
+          { status: verification.status },
+        );
+      }
+      if (pi.amount !== verification.finalTotalPence) {
         return NextResponse.json({ error: "Payment amount does not match accepted quote" }, { status: 409 });
       }
       if (pi.metadata?.quoteReference !== quote.reference) {
@@ -424,176 +431,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ bookingRef: booking.reference, quoteRef: quote.reference });
     }
 
-    const { paymentIntentId, state } = body;
-
-    // Verify payment with Stripe
-    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
-    if (pi.status !== "succeeded") {
-      return NextResponse.json({ error: "Payment not confirmed" }, { status: 400 });
-    }
-
-    // Idempotency: return existing if already confirmed
-    const existing = await db.booking.findFirst({
-      where: { stripePaymentId: paymentIntentId },
-      select: { reference: true },
-    });
-    if (existing) return NextResponse.json({ bookingRef: existing.reference });
-
-    if (!isScotlandAddress(state.pickupAddress)) {
-      return NextResponse.json({ error: SCOTLAND_PICKUP_MESSAGE }, { status: 422 });
-    }
-
-    // Upsert guest user (no password, no account required)
-    let user = await db.user.findUnique({
-      where: { email: state.customerEmail },
-    });
-    if (!user) {
-      user = await db.user.create({
-        data: {
-          name: state.customerName,
-          email: state.customerEmail,
-          phone: state.customerPhone,
-          role: "CUSTOMER",
-        },
-      });
-    }
-
-    const bookingRef = generateRef();
-
-    // Parse the selected date safely — handle "YYYY-MM-DD" without timezone issues
-    const schedDateStr = state.selectedDate || new Date().toISOString().split("T")[0];
-    const [year, month, day] = (schedDateStr as string).split("-").map(Number);
-    const scheduledDate = new Date(year!, month! - 1, day!, 12, 0, 0); // noon avoids DST shifts
-    if (isNaN(scheduledDate.getTime())) {
-      return NextResponse.json({ error: "Invalid date selected" }, { status: 400 });
-    }
-
-    // Map time slot label to a stored time string
-    const timeSlotMap: Record<string, string> = {
-      morning: "09:00",
-      afternoon: "13:00",
-      evening: "17:00",
-    };
-    const scheduledTime = timeSlotMap[state.selectedTimeSlot ?? "morning"] ?? "09:00";
-
-    const booking = await db.booking.create({
-      data: {
-        reference: bookingRef,
-        customerId: user.id,
-        serviceSlug: state.service,
-        serviceName: state.service.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-        serviceVariant: state.serviceVariant || null,
-        status: "CONFIRMED",
-        paymentStatus: "PAID",
-
-        pickupAddress: state.pickupAddress?.fullAddress ?? "",
-        pickupPostcode: state.pickupAddress?.postcode ?? "",
-        pickupLat: state.pickupAddress?.lat ?? null,
-        pickupLng: state.pickupAddress?.lng ?? null,
-        pickupFloor: state.pickupFloor,
-        pickupHasLift: state.pickupHasLift,
-
-        dropoffAddress: state.dropoffAddress?.fullAddress ?? "",
-        dropoffPostcode: state.dropoffAddress?.postcode ?? "",
-        dropoffLat: state.dropoffAddress?.lat ?? null,
-        dropoffLng: state.dropoffAddress?.lng ?? null,
-        dropoffFloor: state.dropoffFloor,
-        dropoffHasLift: state.dropoffHasLift,
-        distanceMiles: state.distanceMiles ?? 0,
-
-        scheduledDate: scheduledDate,
-        scheduledTime: scheduledTime,
-
-        basePrice: state.priceBreakdown?.base ?? 0,
-        quotedPrice: state.priceBreakdown?.total ?? 0,
-        // Use the amount Stripe actually charged (in pence → pounds), not the
-        // client-side figure, so the DB record always matches the bank statement.
-        totalPaid: pi.amount / 100,
-        isPaid: true,
-        stripePaymentId: paymentIntentId,
-
-        helpersCount: state.helpersCount,
-        needsPacking: state.needsPacking,
-        needsAssembly: state.needsAssembly,
-        notes: state.specialInstructions || null,
-        // Keep JSON snapshot for audit
-        items: state.selectedItems.length > 0
-          ? state.selectedItems.map((s) => ({ id: s.itemId, name: s.name, qty: s.quantity }))
-          : undefined,
+    return NextResponse.json(
+      {
+        error: "QUOTE_REQUIRED",
+        reasons: [
+          "QUOTE_REQUIRED: Booking confirmation must use a server-created quote reference and cannot rely on client priceBreakdown data.",
+        ],
       },
-    });
-
-    // Create relational BookingItem records
-    if (state.selectedItems.length > 0) {
-      await db.bookingItem.createMany({
-        data: state.selectedItems.map((s) => ({
-          bookingId: booking.id,
-          itemId: s.itemId,
-          quantity: s.quantity,
-        })),
-        skipDuplicates: true,
-      });
-    }
-
-    // Notify admin
-    await notifyNewBooking(
-      bookingRef,
-      state.customerName ?? "Guest",
-      state.priceBreakdown?.total ?? 0,
-      booking.id,
-    ).catch(() => {}); // fire-and-forget, never fail the booking
-
-    // Create chat conversation for customer ↔ admin
-    await createBookingConversation(booking.id, user.id).catch(() => {});
-
-    // Create initial tracking event + status history record
-    await recordStatusChange({
-      bookingId: booking.id,
-      toStatus: "CONFIRMED",
-      changedByRole: "SYSTEM",
-    }).catch(() => {});
-    await createTrackingEvent({
-      bookingId: booking.id,
-      type: "status_change",
-      title: "Booking confirmed and payment received",
-      description: `Your move is scheduled for ${new Date(scheduledDate).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })} at ${scheduledTime}`,
-      isPublic: true,
-    }).catch(() => {});
-
-    // Send booking confirmation email
-    if (user.email) {
-      const schedDateFormatted = new Date(scheduledDate).toLocaleDateString(
-        "en-GB",
-        { weekday: "long", day: "numeric", month: "long", year: "numeric" }
-      );
-      const timeLabel =
-        state.selectedTimeSlot === "morning"
-          ? "Morning (9am)"
-          : state.selectedTimeSlot === "afternoon"
-          ? "Afternoon (1pm)"
-          : "Evening (5pm)";
-
-      await sendEmail({
-        to: user.email,
-        subject: `Booking Confirmed — ${bookingRef}`,
-        html: bookingConfirmedHtml({
-          customerName: user.name ?? "there",
-          reference: bookingRef,
-          serviceName:
-            state.service
-              .replace(/-/g, " ")
-              .replace(/\b\w/g, (c) => c.toUpperCase()) +
-            (state.serviceVariant ? ` (${state.serviceVariant})` : ""),
-          scheduledDate: schedDateFormatted,
-          scheduledTime: timeLabel,
-          pickupAddress: state.pickupAddress?.fullAddress ?? "",
-          dropoffAddress: state.dropoffAddress?.fullAddress ?? "",
-          totalPaid: state.priceBreakdown?.total ?? 0,
-        }),
-      }).catch(() => {});
-    }
-
-    return NextResponse.json({ bookingRef });
+      { status: 400 },
+    );
   } catch (err) {
     console.error("Confirm booking error:", err);
     return NextResponse.json({ error: "Failed to confirm booking" }, { status: 500 });

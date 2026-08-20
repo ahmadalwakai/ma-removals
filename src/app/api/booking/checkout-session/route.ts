@@ -6,6 +6,7 @@ import {
   reserveQuotePromotionReservations,
 } from "@/lib/pricing/promotion-redemptions";
 import { createQuotePaymentIntentSchema } from "@/lib/quotes/schemas";
+import { verifyQuoteForCheckout } from "@/lib/quotes/service";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "");
 
@@ -17,16 +18,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid Stripe checkout request" }, { status: 400 });
     }
 
-    const quote = await db.quote.findUnique({
-      where: { reference: parsed.data.quoteReference },
-    });
+    const verification = await verifyQuoteForCheckout(parsed.data.quoteReference);
+    if (!verification.ok) {
+      if (verification.code === "BENCHMARK_EXPIRED" || verification.code === "STALE_QUOTE") {
+        await releaseQuotePromotionReservations({
+          quoteReference: parsed.data.quoteReference,
+          reason: `checkout_blocked_${verification.code.toLowerCase()}`,
+        });
+      }
+      return NextResponse.json(
+        { error: verification.code, reasons: verification.reasons },
+        { status: verification.status },
+      );
+    }
+    const quote = verification.quote;
     if (!quote) return NextResponse.json({ error: "Quote not found" }, { status: 404 });
-    if (quote.status === "CONSUMED") {
-      return NextResponse.json({ error: "Quote has already been booked" }, { status: 409 });
-    }
-    if (quote.status !== "FIXED" && quote.status !== "ACCEPTED") {
-      return NextResponse.json({ error: "This quote requires review before payment" }, { status: 422 });
-    }
     if (quote.expiresAt.getTime() <= Date.now()) {
       await db.quote.update({ where: { id: quote.id }, data: { status: "EXPIRED" } });
       await releaseQuotePromotionReservations({
@@ -34,9 +40,6 @@ export async function POST(req: NextRequest) {
         reason: "quote_expired_on_checkout_session",
       });
       return NextResponse.json({ error: "Quote has expired" }, { status: 410 });
-    }
-    if (quote.finalTotalPence == null || quote.finalTotalPence <= 0) {
-      return NextResponse.json({ error: "Quote amount is unavailable" }, { status: 422 });
     }
 
     await reserveQuotePromotionReservations({
@@ -62,7 +65,7 @@ export async function POST(req: NextRequest) {
           quantity: 1,
           price_data: {
             currency: "gbp",
-            unit_amount: quote.finalTotalPence,
+            unit_amount: verification.finalTotalPence,
             product_data: {
               name: `MA Removals booking ${quote.reference}`,
               description: "Home removal booking deposit/payment",

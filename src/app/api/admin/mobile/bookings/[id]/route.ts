@@ -7,7 +7,6 @@ import { db } from "@/lib/db";
 import {
   calculateRemovalQuote,
   normaliseQuoteInputForPricing,
-  type RouteMetrics,
 } from "@/lib/pricing/domain";
 import { getCompetitorPricingContext } from "@/lib/pricing/competitor-repository";
 import { getPromotionPricingContext } from "@/lib/pricing/promotion-repository";
@@ -166,15 +165,6 @@ function parseBookingDate(value: string): Date {
   const [year, month, day] = value.split("-").map(Number);
   const parsed = new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1, 12, 0, 0);
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
-}
-
-function routeFallback(booking: { distanceMiles: number; estimatedHours: number | null }): RouteMetrics {
-  return {
-    distanceMiles: booking.distanceMiles,
-    durationMinutes: Math.max(1, Math.round((booking.estimatedHours ?? 1) * 60)),
-    calculatedAt: new Date().toISOString(),
-    routeHash: `admin-edit-fallback-${Date.now()}`,
-  };
 }
 
 function moneyFromPence(pence: number): number {
@@ -585,7 +575,6 @@ export async function PATCH(
   const inventoryResult = await resolveInventoryForQuote(input);
   const pricingInput = normaliseQuoteInputForPricing(input, inventoryResult.items);
   const routeResult = await calculateServerRoute([pickup, dropoff]);
-  const route = routeResult.route ?? routeFallback(booking);
   const promotion = await getPromotionPricingContext(pricingInput);
   if (pricingVersion?.settings) {
     const minimumContribution = pricingVersion.settings.minimum_contribution;
@@ -605,12 +594,13 @@ export async function PATCH(
   }
   const competitor = await getCompetitorPricingContext(
     pricingInput,
-    route.distanceMiles,
+    routeResult.route?.distanceMiles ?? null,
+    inventoryResult.items,
   );
   const calculated = calculateRemovalQuote({
     input: pricingInput,
     inventory: inventoryResult.items,
-    route,
+    route: routeResult.route,
     pricingVersion,
     promotionContext: promotion.context,
     competitorContext: competitor,
@@ -619,10 +609,17 @@ export async function PATCH(
   });
   const manualReviewReasons = Array.from(new Set([
     ...inventoryResult.reasons,
+    ...routeResult.reasons,
     ...calculated.manualReviewReasons,
   ]));
-  const fallbackPricePence = Math.round((booking.finalPrice ?? booking.quotedPrice) * 100);
-  const finalPricePence = calculated.finalTotalPence ?? fallbackPricePence;
+  if (manualReviewReasons.length > 0 || calculated.status !== "FIXED" || calculated.finalTotalPence == null) {
+    return NextResponse.json({
+      error: "MANUAL_REVIEW_REQUIRED",
+      manualReviewReasons,
+    }, { status: 422 });
+  }
+  const route = routeResult.route!;
+  const finalPricePence = calculated.finalTotalPence;
   const finalPrice = moneyFromPence(finalPricePence);
   const baseLine = calculated.customerBreakdown.find((line) => line.key === "base_service_charge");
   const normalisedInput = {
