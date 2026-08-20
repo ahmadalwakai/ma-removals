@@ -5,7 +5,6 @@ import type {
 } from "@/lib/quotes/schemas";
 import {
   evaluateCompetitorBenchmark,
-  isAnyVanCompetitorLabel,
   type CompetitorPricingContext,
   type CompetitorEvaluationResult,
 } from "@/lib/pricing/competitor-benchmarks";
@@ -185,23 +184,21 @@ function addLine(
   internal.push({ key, label, amountPence, explanation });
 }
 
-function applyCompetitorTargetLock(
+function applyCompetitorPriceCeiling(
   valuePence: number,
   competitorResult: CompetitorEvaluationResult,
   minimumCustomerPricePence: number,
   protectedAddonPence = 0
 ): number {
-  if (competitorResult.targetPricePence == null) return valuePence;
-  const targetPricePence = competitorResult.targetPricePence + protectedAddonPence;
+  if (!competitorResult.applied || competitorResult.finalPricePence == null) return valuePence;
+  const benchmarkCeilingPence = competitorResult.finalPricePence + protectedAddonPence;
   const safeMinimum = (competitorResult.safeMinimumPricePence ?? minimumCustomerPricePence) + protectedAddonPence;
   const minimumCustomerTotalPence = minimumCustomerPricePence + protectedAddonPence;
-  if (Math.max(safeMinimum, minimumCustomerTotalPence) > targetPricePence) {
-    return valuePence;
-  }
-  if (competitorResult.enforceExactTarget) {
-    return targetPricePence;
-  }
-  return Math.min(valuePence, targetPricePence);
+  return Math.max(
+    safeMinimum,
+    minimumCustomerTotalPence,
+    Math.min(valuePence, benchmarkCeilingPence)
+  );
 }
 
 function dateOnly(date: Date): Date {
@@ -979,11 +976,12 @@ export function calculateRemovalQuote(params: {
   const globalMinimumContribution = poundsToPence(setting(versionSettings, "minimum_contribution") ?? 0);
   const globalMinimumMargin = setting(versionSettings, "minimum_margin_percent") ?? setting(versionSettings, "manual_review_min_margin_percent");
   const subtotalBeforeCompetitor = customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
-  const anyVanExactBenchmark = competitorContext?.campaign
-    ? isAnyVanCompetitorLabel(competitorContext.campaign.competitorLabel)
-    : false;
   const protectedCompetitorLineKeys = new Set([
     "schedule_surcharge",
+    "vehicle_charge",
+    "labour_charge",
+    "additional_helper_charge",
+    "inventory_handling_charge",
     "packing_charge",
     "optional_services_charge",
     "assembly_dismantling_charge",
@@ -991,10 +989,7 @@ export function calculateRemovalQuote(params: {
     "extra_inventory_charge",
   ]);
   const competitorProtectedAddonPence = customerBreakdown
-    .filter((line) => (
-      protectedCompetitorLineKeys.has(line.key) ||
-      (anyVanExactBenchmark && line.key === "additional_helper_charge")
-    ))
+    .filter((line) => protectedCompetitorLineKeys.has(line.key))
     .reduce((sum, line) => sum + Math.max(0, line.amountPence), 0);
   const competitorEligibleSubtotalPence = Math.max(0, subtotalBeforeCompetitor - competitorProtectedAddonPence);
   const estimatedCostForCompetitor = Math.round(Math.max(competitorEligibleSubtotalPence, minBookingAmount) * estimatedCostPercent);
@@ -1059,21 +1054,27 @@ export function calculateRemovalQuote(params: {
   reasons.push(...promotionResult.manualReviewReasons);
 
   const rawTotal = customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
-  const withMinimum = Math.max(rawTotal, minBookingAmount);
+  const competitorSafeMinimumTotalPence = competitorResult.applied
+    ? Math.max(
+        minBookingAmount,
+        competitorResult.safeMinimumPricePence ?? minBookingAmount
+      ) + competitorProtectedAddonPence
+    : minBookingAmount;
+  const withMinimum = Math.max(rawTotal, competitorSafeMinimumTotalPence);
   let finalTotalPence = applyCustomerRounding({
     valuePence: withMinimum,
-    minimumPence: minBookingAmount,
+    minimumPence: competitorSafeMinimumTotalPence,
     incrementPence: Math.max(1, roundingPolicy),
     strategy: roundingStrategy,
   });
-  finalTotalPence = applyCompetitorTargetLock(finalTotalPence, competitorResult, minBookingAmount, competitorProtectedAddonPence);
+  finalTotalPence = applyCompetitorPriceCeiling(finalTotalPence, competitorResult, minBookingAmount, competitorProtectedAddonPence);
   const originalTotalPence = applyCustomerRounding({
     valuePence: Math.max(preDiscountTotalPence, minBookingAmount),
     minimumPence: minBookingAmount,
     incrementPence: Math.max(1, roundingPolicy),
     strategy: roundingStrategy,
   });
-  let roundingAdjustmentPence = finalTotalPence - withMinimum;
+  let roundingAdjustmentPence = 0;
 
   if (finalTotalPence <= 0) {
     reasons.push("Pricing invariant failed: final total must be positive");
@@ -1092,13 +1093,28 @@ export function calculateRemovalQuote(params: {
     );
     finalTotalPence = applyCustomerRounding({
       valuePence: finalTotalPence + vatAmount,
-      minimumPence: minBookingAmount,
+      minimumPence: competitorSafeMinimumTotalPence + vatAmount,
       incrementPence: Math.max(1, roundingPolicy),
       strategy: roundingStrategy,
     });
-    finalTotalPence = applyCompetitorTargetLock(finalTotalPence, competitorResult, minBookingAmount, competitorProtectedAddonPence);
-    roundingAdjustmentPence = finalTotalPence - withMinimum - vatAmount;
+    finalTotalPence = applyCompetitorPriceCeiling(
+      finalTotalPence,
+      competitorResult,
+      minBookingAmount,
+      competitorProtectedAddonPence + vatAmount
+    );
   }
+
+  const visibleTotalBeforeRounding = customerBreakdown.reduce((sum, line) => sum + line.amountPence, 0);
+  roundingAdjustmentPence = finalTotalPence - visibleTotalBeforeRounding;
+  addLine(
+    customerBreakdown,
+    internalBreakdown,
+    "rounding_adjustment",
+    roundingAdjustmentPence > 0 ? "Rounding adjustment" : "Rounded price",
+    roundingAdjustmentPence,
+    "Customer total reconciled to the configured rounding policy without changing the underlying pricing inputs"
+  );
 
   const estimatedCostPence = Math.round(finalTotalPence * estimatedCostPercent);
   const grossProfitPence = finalTotalPence - estimatedCostPence;

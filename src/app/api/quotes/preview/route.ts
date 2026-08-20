@@ -1,20 +1,23 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { calculateRemovalQuote, normaliseQuoteInputForPricing } from "@/lib/pricing/domain";
-import { getCompetitorPricingContext } from "@/lib/pricing/competitor-repository";
-import { getPromotionPricingContext } from "@/lib/pricing/promotion-repository";
-import { getActivePricingVersion } from "@/lib/pricing/version-repository";
+import {
+  calculateRemovalQuote,
+  normaliseQuoteInputForPricing,
+  type PricingVersionSnapshot,
+  type ResolvedInventoryItem,
+  type RouteMetrics,
+} from "@/lib/pricing/domain";
+import type { CompetitorPricingContext } from "@/lib/pricing/competitor-benchmarks";
 import { packingChargePenceForMove } from "@/lib/pricing/packing";
-import { createQuoteRequestSchema } from "@/lib/quotes/schemas";
-import { resolveInventoryForQuote } from "@/lib/quotes/service";
-import { calculateServerRoute } from "@/lib/routing/mapbox";
+import type { PromotionPricingContext } from "@/lib/pricing/promotions";
+import { createQuoteRequestSchema, type AddressAccessInput } from "@/lib/quotes/schemas";
 
 const previewRequestSchema = z.object({
   quotes: z.array(createQuoteRequestSchema).min(1).max(80),
 });
 
-type PreviewInput = z.infer<typeof createQuoteRequestSchema>;
-type PreviewResult = {
+export type PreviewInput = z.infer<typeof createQuoteRequestSchema>;
+export type PreviewResult = {
   key: string;
   date: string | null;
   requestedMovers: number | null;
@@ -49,6 +52,32 @@ type PreviewResult = {
   estimateSource?: "authoritative" | "fast";
 };
 
+type InventoryResolution = {
+  items: ResolvedInventoryItem[];
+  reasons: string[];
+};
+
+type RouteResolution = {
+  route: RouteMetrics | null;
+  reasons: string[];
+};
+
+type PromotionResolution = {
+  context: PromotionPricingContext;
+  invalidPromotionCode: string | null;
+};
+
+export interface PreviewDependencies {
+  getActivePricingVersion: () => Promise<PricingVersionSnapshot | null>;
+  resolveInventoryForQuote: (input: PreviewInput) => Promise<InventoryResolution>;
+  calculateServerRoute: (addresses: AddressAccessInput[]) => Promise<RouteResolution>;
+  getPromotionPricingContext: (input: PreviewInput) => Promise<PromotionResolution>;
+  getCompetitorPricingContext: (
+    input: PreviewInput,
+    routeMileage: number | null
+  ) => Promise<CompetitorPricingContext>;
+}
+
 const AUTHORITATIVE_PREVIEW_TIMEOUT_MS = 3500;
 const CLIENT_ESTIMATED_VOLUME_PER_ITEM_M3 = 0.81;
 
@@ -72,6 +101,52 @@ function quoteExpiry(settings: Record<string, number>, now: Date): Date {
     ? settings.quote_expiry_hours
     : 24;
   return new Date(now.getTime() + hours * 60 * 60 * 1000);
+}
+
+function applyPromotionProtectionSettings(
+  context: PromotionPricingContext,
+  settings: Record<string, number>
+): PromotionPricingContext {
+  const minimumContribution = settings.minimum_contribution;
+  const minimumMargin = settings.minimum_margin_percent ?? settings.manual_review_min_margin_percent;
+
+  return {
+    ...context,
+    minimumContributionPence:
+      typeof minimumContribution === "number" && Number.isFinite(minimumContribution)
+        ? Math.round(minimumContribution * 100)
+        : 0,
+    minimumMarginPercent:
+      typeof minimumMargin === "number" && Number.isFinite(minimumMargin)
+        ? minimumMargin
+        : null,
+    allowZeroMargin: settings.allow_zero_margin === 1,
+    allowNegativeMargin: settings.allow_negative_margin === 1,
+  };
+}
+
+async function defaultPreviewDependencies(): Promise<PreviewDependencies> {
+  const [
+    versionRepository,
+    quoteService,
+    routing,
+    promotionRepository,
+    competitorRepository,
+  ] = await Promise.all([
+    import("@/lib/pricing/version-repository"),
+    import("@/lib/quotes/service"),
+    import("@/lib/routing/mapbox"),
+    import("@/lib/pricing/promotion-repository"),
+    import("@/lib/pricing/competitor-repository"),
+  ]);
+
+  return {
+    getActivePricingVersion: versionRepository.getActivePricingVersion,
+    resolveInventoryForQuote: quoteService.resolveInventoryForQuote,
+    calculateServerRoute: routing.calculateServerRoute,
+    getPromotionPricingContext: promotionRepository.getPromotionPricingContext,
+    getCompetitorPricingContext: competitorRepository.getCompetitorPricingContext,
+  };
 }
 
 function toRad(value: number) {
@@ -238,92 +313,82 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   }
 }
 
-async function buildAuthoritativePreviews(quotes: PreviewInput[]): Promise<PreviewResult[]> {
-  const [firstInput] = quotes;
-  if (!firstInput) return [];
+export async function buildAuthoritativePreviews(
+  quotes: PreviewInput[],
+  dependencies?: PreviewDependencies
+): Promise<PreviewResult[]> {
+  if (quotes.length === 0) return [];
 
-    const pricingVersion = await getActivePricingVersion();
-    const now = new Date();
-    const expiresAt = quoteExpiry(pricingVersion?.settings ?? {}, now);
+  const deps = dependencies ?? await defaultPreviewDependencies();
+  const pricingVersion = await deps.getActivePricingVersion();
+  const now = new Date();
+  const expiresAt = quoteExpiry(pricingVersion?.settings ?? {}, now);
+  const settings = pricingVersion?.settings ?? {};
+
+  return Promise.all(quotes.map(async (input) => {
     const addresses = [
-      firstInput.collection,
-      ...(firstInput.additionalStop ? [firstInput.additionalStop] : []),
-      firstInput.delivery,
+      input.collection,
+      ...(input.additionalStop ? [input.additionalStop] : []),
+      input.delivery,
     ];
     const [inventoryResult, routeResult] = await Promise.all([
-      resolveInventoryForQuote(firstInput),
-      calculateServerRoute(addresses),
+      deps.resolveInventoryForQuote(input),
+      deps.calculateServerRoute(addresses),
     ]);
-    const firstPricingInput = normaliseQuoteInputForPricing(firstInput, inventoryResult.items);
+    const pricingInput = normaliseQuoteInputForPricing(input, inventoryResult.items);
     const [promotion, competitor] = await Promise.all([
-      getPromotionPricingContext(firstPricingInput),
-      getCompetitorPricingContext(firstPricingInput, routeResult.route?.distanceMiles ?? null),
+      deps.getPromotionPricingContext(pricingInput),
+      deps.getCompetitorPricingContext(pricingInput, routeResult.route?.distanceMiles ?? null),
     ]);
 
     if (promotion.invalidPromotionCode) {
-      return quotes.map((input) => ({
-          key: previewKey(input),
-          date: input.moveDate ?? null,
-          requestedMovers: input.preferredMovers ?? null,
-          status: "MANUAL_REVIEW" as const,
-          totalPence: null,
-          manualReviewReasons: ["Promotion code is not valid"],
-          estimateSource: "authoritative",
-      }));
-    }
-
-    if (pricingVersion?.settings) {
-      const minimumContribution = pricingVersion.settings.minimum_contribution;
-      const minimumMargin = pricingVersion.settings.minimum_margin_percent ?? pricingVersion.settings.manual_review_min_margin_percent;
-      promotion.context.minimumContributionPence =
-        typeof minimumContribution === "number" && Number.isFinite(minimumContribution)
-          ? Math.round(minimumContribution * 100)
-          : 0;
-      promotion.context.minimumMarginPercent =
-        typeof minimumMargin === "number" && Number.isFinite(minimumMargin)
-          ? minimumMargin
-          : null;
-      promotion.context.allowZeroMargin = pricingVersion.settings.allow_zero_margin === 1;
-      promotion.context.allowNegativeMargin = pricingVersion.settings.allow_negative_margin === 1;
-    }
-
-    return quotes.map((input) => {
-      const pricingInput = normaliseQuoteInputForPricing(input, inventoryResult.items);
-      const result = calculateRemovalQuote({
-        input: pricingInput,
-        inventory: inventoryResult.items,
-        route: routeResult.route,
-        pricingVersion,
-        promotionContext: promotion.context,
-        competitorContext: competitor,
-        now,
-        quoteExpiresAt: expiresAt,
-      });
-      const manualReviewReasons = Array.from(new Set([
-        ...inventoryResult.reasons,
-        ...routeResult.reasons,
-        ...result.manualReviewReasons,
-      ]));
-      const status = manualReviewReasons.length > 0 ? "MANUAL_REVIEW" : result.status;
-
       return {
         key: previewKey(input),
         date: input.moveDate ?? null,
         requestedMovers: input.preferredMovers ?? null,
-        status,
-        totalPence: status === "FIXED" ? result.finalTotalPence : null,
-        originalTotalPence: result.customerSummary.originalTotalPence,
-        discountTotalPence: result.customerSummary.discountTotalPence,
-        promotionLabel: result.customerSummary.promotionLabel,
-        routeMileage: result.customerSummary.routeMileage,
-        estimatedDurationMinutes: result.customerSummary.estimatedDurationMinutes,
-        vehicle: result.vehicleRecommendation,
-        crew: result.crewRecommendation,
-        breakdown: status === "FIXED" ? result.customerBreakdown : [],
-        manualReviewReasons,
+        status: "MANUAL_REVIEW" as const,
+        totalPence: null,
+        manualReviewReasons: ["Promotion code is not valid"],
         estimateSource: "authoritative" as const,
       };
+    }
+
+    const result = calculateRemovalQuote({
+      input: pricingInput,
+      inventory: inventoryResult.items,
+      route: routeResult.route,
+      pricingVersion,
+      promotionContext: applyPromotionProtectionSettings(promotion.context, settings),
+      competitorContext: competitor,
+      now,
+      quoteExpiresAt: expiresAt,
     });
+    const manualReviewReasons = Array.from(new Set([
+      ...inventoryResult.reasons,
+      ...routeResult.reasons,
+      ...result.manualReviewReasons,
+    ]));
+    const status = manualReviewReasons.length > 0 ? "MANUAL_REVIEW" : result.status;
+
+    return {
+      key: previewKey(input),
+      date: input.moveDate ?? null,
+      requestedMovers: input.preferredMovers ?? null,
+      status,
+      totalPence: status === "FIXED" ? result.finalTotalPence : null,
+      originalTotalPence: result.customerSummary.originalTotalPence,
+      discountTotalPence: result.customerSummary.discountTotalPence,
+      promotionLabel: result.customerSummary.promotionLabel,
+      routeMileage: result.customerSummary.routeMileage,
+      estimatedDurationMinutes: result.customerSummary.estimatedDurationMinutes,
+      vehicle: result.vehicleRecommendation,
+      crew: result.crewRecommendation,
+      inventory: result.inventoryMetrics,
+      breakdown: status === "FIXED" ? result.customerBreakdown : [],
+      manualReviewReasons,
+      estimateSource: "authoritative" as const,
+    };
+  }));
 }
 
 export async function POST(req: NextRequest) {

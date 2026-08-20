@@ -3,6 +3,8 @@ import { db } from "@/lib/db";
 import { colors, shadows } from "@/lib/tokens";
 import { KpiCards } from "@/components/admin/dashboard/KpiCards";
 
+export const dynamic = "force-dynamic";
+
 function statusBadge(status: string) {
   const map: Record<string, { bg: string; color: string }> = {
     CONFIRMED:   { bg: "rgba(37,99,235,0.12)",  color: "#2563EB" },

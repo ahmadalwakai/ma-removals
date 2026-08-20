@@ -129,12 +129,11 @@ function safeMinimumPrice(params: {
   const minimumPrice = Math.max(params.minimumCustomerPricePence, campaign.minimumPricePence ?? 0);
   const minimumContribution = campaign.minimumContributionPence ?? params.globalMinimumContributionPence;
   const minimumMargin = campaign.minimumMarginPercent ?? params.globalMinimumMarginPercent;
+  const negativeMarginAllowed = campaign.allowNegativeMargin && campaign.maximumPermittedLossPence != null;
   let safe = minimumPrice;
 
-  if (campaign.allowNegativeMargin) {
-    if (campaign.maximumPermittedLossPence != null) {
-      safe = Math.max(safe, params.estimatedCostPence - campaign.maximumPermittedLossPence);
-    }
+  if (negativeMarginAllowed) {
+    safe = Math.max(safe, params.estimatedCostPence - campaign.maximumPermittedLossPence!);
     if (minimumContribution > 0) {
       safe = Math.max(safe, params.estimatedCostPence + minimumContribution);
     }
@@ -206,19 +205,18 @@ export function evaluateCompetitorBenchmark(
     return { ...empty, benchmarkId: benchmark.id, campaignId: campaign.id, unableReason: "Competitor benchmark distance band mismatch" };
   }
 
-  const protectedSafeMinimum = safeMinimumPrice({
+  const safeMinimum = safeMinimumPrice({
     minimumCustomerPricePence: job.minimumCustomerPricePence,
     estimatedCostPence: job.estimatedCostPence,
     globalMinimumContributionPence: job.globalMinimumContributionPence,
     globalMinimumMarginPercent: job.globalMinimumMarginPercent,
     campaign,
   });
-  const safeMinimum = anyVanCampaign ? job.minimumCustomerPricePence : protectedSafeMinimum;
   const beatPercentage = effectiveBeatPercentage(campaign);
   const percentageBeat = Math.ceil(benchmark.benchmarkPricePence * beatPercentage);
   let target = Math.max(0, benchmark.benchmarkPricePence - percentageBeat - (campaign.beatFixedAmountPence ?? 0));
   let maxDiscountLimited = false;
-  if (!anyVanCampaign && campaign.maximumDiscountPence != null && job.normalOperationalPricePence - target > campaign.maximumDiscountPence) {
+  if (campaign.maximumDiscountPence != null && job.normalOperationalPricePence - target > campaign.maximumDiscountPence) {
     target = job.normalOperationalPricePence - campaign.maximumDiscountPence;
     maxDiscountLimited = true;
   }
@@ -245,20 +243,17 @@ export function evaluateCompetitorBenchmark(
     appliedRule: discount > 0 ? "beat_competitor" : null,
     unableReason,
     customerLabel: discount > 0 ? "Online booking price" : null,
-    enforceExactTarget: anyVanCampaign,
+    enforceExactTarget: false,
     internalNotes: [
       `Beat competitor campaign ${campaign.internalName} evaluated against ${campaign.competitorLabel}`,
       ...(anyVanCampaign && campaign.beatPercentage < ANYVAN_MINIMUM_BEAT_PERCENTAGE
         ? [`AnyVan minimum beat raised from ${Math.round(campaign.beatPercentage * 100)}% to 10%`]
         : []),
-      ...(anyVanCampaign && campaign.maximumDiscountPence != null
-        ? ["AnyVan minimum beat is not limited by the maximum discount cap"]
-        : []),
-      ...(anyVanCampaign && protectedSafeMinimum > safeMinimum
-        ? ["AnyVan minimum beat is not blocked by margin safety floors"]
+      ...(campaign.allowNegativeMargin && campaign.maximumPermittedLossPence == null
+        ? ["Negative-margin setting ignored because no maximum permitted loss is configured"]
         : []),
       ...(anyVanCampaign
-        ? ["AnyVan minimum beat applies across all move types and property sizes"]
+        ? ["AnyVan minimum beat applies across all move types and property sizes with standard margin and discount protections"]
         : []),
       `Benchmark ${benchmark.id} source note: ${benchmark.sourceNote}`,
       ...(maxDiscountLimited ? ["Maximum discount cap reached"] : []),
