@@ -2,7 +2,7 @@
 
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Box, Flex, HStack, SimpleGrid, Spinner, Text, VStack } from "@chakra-ui/react";
+import { Box, CloseButton, Drawer, Flex, HStack, Portal, SimpleGrid, Spinner, Text, VStack } from "@chakra-ui/react";
 import {
   FiAlertTriangle,
   FiArrowLeft,
@@ -567,6 +567,18 @@ interface QuotePricePreview {
 type PriceTone = "cheap" | "medium" | "expensive";
 
 const PRICE_TONE_ORDER: PriceTone[] = ["cheap", "medium", "expensive"];
+type DateFlexibilityMode = "exact" | "three-days" | "this-month";
+
+const DATE_FLEXIBILITY_OPTIONS: Array<{ value: DateFlexibilityMode; label: string; description: string }> = [
+  { value: "exact", label: "Exact", description: "Show only the selected date." },
+  { value: "three-days", label: "\u00b13 days", description: "Show available dates within three days." },
+  { value: "this-month", label: "This month", description: "Show available dates in this month." },
+];
+
+const canonicalGbpFormatter = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "GBP",
+});
 
 const PRICE_TONE_META: Record<PriceTone, {
   label: string;
@@ -1008,6 +1020,17 @@ function formatMoveDateSummary(dateValue: string) {
   return date.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
 }
 
+function formatCanonicalPence(amountPence: number) {
+  return canonicalGbpFormatter.format(amountPence / 100);
+}
+
+function formatMoveDateWeekday(dateValue: string) {
+  if (!dateValue) return "Selected date";
+  const date = new Date(`${dateValue}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return "Selected date";
+  return date.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+}
+
 function protectionPlusPence() {
   return 3200;
 }
@@ -1027,6 +1050,89 @@ function toDateInputValue(date: Date) {
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
   const day = `${date.getDate()}`.padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function parseDateInputValue(dateValue: string | null | undefined) {
+  if (!dateValue) return null;
+  const date = new Date(`${dateValue}T12:00:00`);
+  return Number.isNaN(date.getTime()) ? null : normaliseDate(date);
+}
+
+function daysBetween(startDate: Date, endDate: Date) {
+  const start = normaliseDate(startDate).getTime();
+  const end = normaliseDate(endDate).getTime();
+  return Math.round((end - start) / 86_400_000);
+}
+
+function isSameCalendarMonth(date: Date, referenceDate: Date) {
+  return date.getFullYear() === referenceDate.getFullYear() && date.getMonth() === referenceDate.getMonth();
+}
+
+function isFixedPreview(preview: QuotePricePreview | undefined): preview is QuotePricePreview & { totalPence: number } {
+  return preview?.status === "FIXED" && typeof preview.totalPence === "number" && Number.isFinite(preview.totalPence);
+}
+
+function currentDateFlexibilityMode(
+  selectedDate: string,
+  flexibleDate: boolean,
+  earliestDate: string,
+  latestDate: string
+): DateFlexibilityMode {
+  if (!flexibleDate) return "exact";
+  const selected = parseDateInputValue(selectedDate);
+  const earliest = parseDateInputValue(earliestDate);
+  const latest = parseDateInputValue(latestDate);
+  if (selected && earliest && latest) {
+    const startsThreeDaysBefore = daysBetween(earliest, selected) === 3;
+    const endsThreeDaysAfter = daysBetween(selected, latest) === 3;
+    if (startsThreeDaysBefore && endsThreeDaysAfter) return "three-days";
+  }
+  return "this-month";
+}
+
+function dateFlexibilityRange(selectedDate: string, mode: DateFlexibilityMode) {
+  const selected = parseDateInputValue(selectedDate);
+  if (!selected || mode === "exact") {
+    return { flexibleDate: false, earliestDate: "", latestDate: "" };
+  }
+
+  if (mode === "three-days") {
+    return {
+      flexibleDate: true,
+      earliestDate: toDateInputValue(addDays(selected, -3)),
+      latestDate: toDateInputValue(addDays(selected, 3)),
+    };
+  }
+
+  const firstDay = new Date(selected.getFullYear(), selected.getMonth(), 1);
+  const lastDay = new Date(selected.getFullYear(), selected.getMonth() + 1, 0);
+  return {
+    flexibleDate: true,
+    earliestDate: toDateInputValue(firstDay),
+    latestDate: toDateInputValue(lastDay),
+  };
+}
+
+function filterCalendarDaysForFlexibility(
+  days: ReturnType<typeof makePriceCalendarDays>,
+  selectedDate: string,
+  anchorDate: Date,
+  mode: DateFlexibilityMode
+) {
+  const selected = parseDateInputValue(selectedDate) ?? normaliseDate(anchorDate);
+  if (mode === "exact") {
+    return days.filter((day) => !day.isPast && day.iso === toDateInputValue(selected));
+  }
+
+  if (mode === "three-days") {
+    const range = dateFlexibilityRange(toDateInputValue(selected), mode);
+    const earliest = parseDateInputValue(range.earliestDate);
+    const latest = parseDateInputValue(range.latestDate);
+    if (!earliest || !latest) return [];
+    return days.filter((day) => !day.isPast && day.date >= earliest && day.date <= latest);
+  }
+
+  return days.filter((day) => !day.isPast && isSameCalendarMonth(day.date, selected));
 }
 
 function formatMonthYear(date: Date) {
@@ -2524,12 +2630,15 @@ function CrewOption({
   return (
     <Box
       as="button"
+      role="radio"
+      aria-checked={selected}
       onClick={() => {
         if (!unavailable) onClick();
       }}
+      aria-label={`${movers === 1 ? "1 Person" : "2 People"}, ${description}`}
       aria-disabled={unavailable ? "true" : undefined}
       tabIndex={unavailable ? -1 : undefined}
-      h={{ base: "74px", md: "58px" }}
+      minH={{ base: "74px", md: "58px" }}
       px={{ base: 2.5, md: 4 }}
       borderRight={`1px solid ${bookingTheme.borderStrong}`}
       borderTop={selected ? `3px solid ${bookingTheme.heroBlue}` : "3px solid transparent"}
@@ -2563,7 +2672,7 @@ function CrewOption({
           fontWeight={900}
           color={priceToneMeta?.color}
         >
-          {unavailable ? unavailableLabel : typeof pricePence === "number" ? formatPence(pricePence) : loading ? "Checking" : "Quote"}
+          {unavailable ? unavailableLabel : typeof pricePence === "number" ? formatCanonicalPence(pricePence) : loading ? "Checking" : "Quote"}
         </Text>
         {loading && !hasPrice && !unavailable && <PriceLoadingDots color={bookingTheme.heroBlue} />}
       </HStack>
@@ -2681,12 +2790,26 @@ function PriceCalendar({
             const preview = pricePreviews[day.iso];
             const priceTone = priceToneForTotal(preview?.totalPence, comparisonPrices);
             const priceToneMeta = priceTone ? PRICE_TONE_META[priceTone] : null;
-            const hasPrice = typeof preview?.totalPence === "number";
+            const hasPrice = isFixedPreview(preview);
             const hasFailedPreview = Boolean(failedDates?.[day.iso]);
+            const dateLabel = formatMoveDateWeekday(day.iso);
+            const dayStateLabel = day.isPast
+              ? "Unavailable, date has passed"
+              : hasPrice
+                ? formatCanonicalPence(preview.totalPence)
+                : loading
+                  ? "Updating price"
+                  : preview?.status === "MANUAL_REVIEW"
+                    ? "Manual review required"
+                    : previewError && hasFailedPreview
+                      ? "Price unavailable, retry available"
+                      : "Price unavailable";
             return (
               <Box
                 key={day.iso}
                 as="button"
+                aria-label={`${dateLabel}: ${dayStateLabel}`}
+                aria-current={selected ? "date" : undefined}
                 aria-disabled={day.isPast ? "true" : undefined}
                 onClick={() => {
                   if (!day.isPast) onSelectDate(day.iso);
@@ -2727,8 +2850,8 @@ function PriceCalendar({
                     fontWeight={900}
                     color={priceToneMeta?.color ?? (selected ? bookingTheme.heroBlue : bookingTheme.ink)}
                   >
-                    {typeof preview?.totalPence === "number"
-                        ? formatPence(preview.totalPence)
+                    {hasPrice
+                        ? formatCanonicalPence(preview.totalPence)
                       : loading
                         ? <PriceLoadingDots color={selected ? bookingTheme.heroBlue : bookingTheme.muted} />
                       : preview?.status === "MANUAL_REVIEW"
@@ -2744,6 +2867,466 @@ function PriceCalendar({
         </Box>
       </Box>
     </Box>
+  );
+}
+
+function DateFlexibilityRadioGroup({
+  value,
+  onChange,
+}: {
+  value: DateFlexibilityMode;
+  onChange: (value: DateFlexibilityMode) => void;
+}) {
+  return (
+    <Box
+      role="radiogroup"
+      aria-label="Date flexibility"
+      p={{ base: 3, md: 4 }}
+      borderRadius="md"
+      border={`1px solid ${bookingTheme.borderStrong}`}
+      bg="#FFFFFF"
+    >
+      <HStack gap={3} mb={3} align="center">
+        <Box
+          w="42px"
+          h="42px"
+          borderRadius="full"
+          bg="rgba(37,99,235,0.10)"
+          color={bookingTheme.heroBlue}
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          flexShrink={0}
+        >
+          <FiCalendar size={21} />
+        </Box>
+        <Box minW={0}>
+          <Text fontSize="md" fontWeight={900} color={bookingTheme.ink}>
+            Flexible dates
+          </Text>
+          <Text fontSize="sm" color={bookingTheme.muted}>
+            Filter loaded calendar prices
+          </Text>
+        </Box>
+      </HStack>
+      <SimpleGrid columns={3} gap={2}>
+        {DATE_FLEXIBILITY_OPTIONS.map((option) => {
+          const selected = value === option.value;
+          return (
+            <Box
+              key={option.value}
+              as="button"
+              role="radio"
+              aria-checked={selected}
+              aria-label={`${option.label}: ${option.description}`}
+              onClick={() => onChange(option.value)}
+              minH="44px"
+              px={{ base: 2, md: 3 }}
+              py={2}
+              borderRadius="md"
+              border={`1.5px solid ${selected ? bookingTheme.heroBlue : bookingTheme.borderStrong}`}
+              bg={selected ? bookingTheme.heroBlue : "#FFFFFF"}
+              color={selected ? "#FFFFFF" : bookingTheme.ink}
+              fontSize={{ base: "sm", md: "md" }}
+              fontWeight={900}
+              textAlign="center"
+              _hover={selected ? {} : { borderColor: bookingTheme.heroBlue, bg: "#F8FBFC" }}
+              _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+            >
+              {option.label}
+            </Box>
+          );
+        })}
+      </SimpleGrid>
+    </Box>
+  );
+}
+
+function DateCardScroller({
+  days,
+  selectedDate,
+  pricePreviews,
+  failedDates,
+  loading,
+  previewError,
+  selectedIsLowestShown,
+  onSelectDate,
+  onOpenMonth,
+}: {
+  days: ReturnType<typeof makePriceCalendarDays>;
+  selectedDate: string;
+  pricePreviews: Record<string, QuotePricePreview>;
+  failedDates: Record<string, true>;
+  loading: boolean;
+  previewError: string;
+  selectedIsLowestShown: boolean;
+  onSelectDate: (date: string) => void;
+  onOpenMonth: () => void;
+}) {
+  const focusDateCard = (date: string) => {
+    if (typeof window === "undefined") return;
+    window.requestAnimationFrame(() => {
+      document.getElementById(`move-date-card-${date}`)?.focus();
+    });
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent, index: number) => {
+    const keyMap: Record<string, number> = {
+      ArrowRight: Math.min(index + 1, days.length - 1),
+      ArrowLeft: Math.max(index - 1, 0),
+      Home: 0,
+      End: days.length - 1,
+    };
+    const targetIndex = keyMap[event.key];
+    if (typeof targetIndex !== "number") return;
+    event.preventDefault();
+    const targetDay = days[targetIndex];
+    if (!targetDay) return;
+    onSelectDate(targetDay.iso);
+    focusDateCard(targetDay.iso);
+  };
+
+  if (days.length === 0) {
+    return (
+      <Box
+        role="status"
+        p={4}
+        borderRadius="md"
+        border={`1px dashed ${bookingTheme.borderStrong}`}
+        bg="#FFFFFF"
+        color={bookingTheme.ink}
+      >
+        <Text fontSize="sm" fontWeight={900}>
+          No dates available in this view.
+        </Text>
+        <Text mt={1} fontSize="sm" color={bookingTheme.muted}>
+          Open the month calendar to choose another date.
+        </Text>
+        <Box
+          as="button"
+          onClick={onOpenMonth}
+          mt={3}
+          minH="44px"
+          px={4}
+          borderRadius="md"
+          border={`1px solid ${bookingTheme.heroBlue}`}
+          color={bookingTheme.heroBlue}
+          fontWeight={900}
+          _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+        >
+          View all dates
+        </Box>
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      role="radiogroup"
+      aria-label="Move date options"
+      w="full"
+      overflowX="auto"
+      overflowY="hidden"
+      scrollSnapType="x mandatory"
+      scrollPaddingInline={{ base: 4, md: 0 }}
+      overscrollBehaviorX="contain"
+      pb={2}
+    >
+      <HStack align="stretch" gap={3} minW="max-content">
+        {days.map((day, index) => {
+          const preview = pricePreviews[day.iso];
+          const fixedPrice = isFixedPreview(preview);
+          const selected = day.iso === selectedDate;
+          const failed = Boolean(failedDates[day.iso]);
+          const priceLabel = fixedPrice ? formatCanonicalPence(preview.totalPence) : null;
+          const statusLabel = fixedPrice
+            ? priceLabel
+            : loading
+              ? "Updating price"
+              : preview?.status === "MANUAL_REVIEW"
+                ? "Review required"
+                : previewError && failed
+                  ? "Retry needed"
+                  : "Unavailable";
+          const showLowestShown = selected && fixedPrice && selectedIsLowestShown;
+          const weekdayLabel = day.date.toLocaleDateString("en-GB", { weekday: "short" });
+          const ariaLabel = `${formatMoveDateWeekday(day.iso)}: ${statusLabel}${showLowestShown ? ", lowest shown" : ""}`;
+
+          return (
+            <Box
+              key={day.iso}
+              id={`move-date-card-${day.iso}`}
+              as="button"
+              role="radio"
+              aria-checked={selected}
+              aria-label={ariaLabel}
+              aria-current={selected ? "date" : undefined}
+              onClick={() => onSelectDate(day.iso)}
+              onKeyDown={(event) => handleKeyDown(event, index)}
+              w={{ base: "132px", md: "148px" }}
+              minH={{ base: "164px", md: "172px" }}
+              flex="0 0 auto"
+              p={3}
+              borderRadius="md"
+              border={`1.5px solid ${selected ? bookingTheme.heroBlue : bookingTheme.borderStrong}`}
+              bg={selected ? bookingTheme.heroBlue : "#FFFFFF"}
+              color={selected ? "#FFFFFF" : bookingTheme.ink}
+              scrollSnapAlign="start"
+              textAlign="center"
+              display="flex"
+              flexDirection="column"
+              justifyContent="space-between"
+              gap={2}
+              _hover={selected ? {} : { borderColor: bookingTheme.heroBlue, bg: "#F8FBFC" }}
+              _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+            >
+              <Box>
+                <Text fontSize="sm" color={selected ? "rgba(255,255,255,0.92)" : bookingTheme.muted}>
+                  {weekdayLabel}
+                </Text>
+                <Text mt={1} fontSize="4xl" lineHeight="1" fontWeight={900}>
+                  {day.date.getDate()}
+                </Text>
+              </Box>
+              <Box minH="54px" display="flex" flexDirection="column" alignItems="center" justifyContent="end" gap={1}>
+                <Text fontSize={{ base: "lg", md: "xl" }} fontWeight={900} whiteSpace="nowrap">
+                  {priceLabel ?? statusLabel}
+                </Text>
+                {loading && priceLabel && (
+                  <Text fontSize="xs" fontWeight={800} color={selected ? "rgba(255,255,255,0.90)" : bookingTheme.muted}>
+                    Updating price
+                  </Text>
+                )}
+                {showLowestShown && (
+                  <Text
+                    as="span"
+                    px={2.5}
+                    py={1}
+                    borderRadius="full"
+                    bg="#148A5B"
+                    color="#FFFFFF"
+                    fontSize="xs"
+                    fontWeight={900}
+                  >
+                    Lowest shown
+                  </Text>
+                )}
+              </Box>
+            </Box>
+          );
+        })}
+      </HStack>
+    </Box>
+  );
+}
+
+function FullMonthCalendarDrawer({
+  open,
+  selectedDate,
+  anchorDate,
+  pricePreviews,
+  failedPreviewDates,
+  pricePreviewLoading,
+  pricePreviewError,
+  onOpenChange,
+  onCalendarPrevious,
+  onCalendarNext,
+  onDateSelect,
+}: {
+  open: boolean;
+  selectedDate: string;
+  anchorDate: Date;
+  pricePreviews: Record<string, QuotePricePreview>;
+  failedPreviewDates: Record<string, true>;
+  pricePreviewLoading: boolean;
+  pricePreviewError: string;
+  onOpenChange: (open: boolean) => void;
+  onCalendarPrevious: () => void;
+  onCalendarNext: () => void;
+  onDateSelect: (date: string) => void;
+}) {
+  return (
+    <Drawer.Root open={open} onOpenChange={(details) => onOpenChange(details.open)} placement="bottom">
+      <Portal>
+        <Drawer.Backdrop bg="rgba(8, 20, 43, 0.48)" />
+        <Drawer.Positioner alignItems="end">
+          <Drawer.Content
+            maxH="92dvh"
+            borderTopRadius="xl"
+            borderBottomRadius={0}
+            bg="#FFFFFF"
+            overflow="hidden"
+          >
+            <Drawer.Header
+              px={{ base: 4, md: 6 }}
+              py={4}
+              borderBottom={`1px solid ${bookingTheme.border}`}
+              display="flex"
+              alignItems="center"
+              justifyContent="space-between"
+              gap={3}
+            >
+              <Box minW={0}>
+                <Text fontSize="lg" fontWeight={900} color={bookingTheme.ink}>
+                  Full month calendar
+                </Text>
+                <Text fontSize="sm" color={bookingTheme.muted}>
+                  Choose a date from loaded prices
+                </Text>
+              </Box>
+              <Drawer.CloseTrigger asChild>
+                <CloseButton size="sm" />
+              </Drawer.CloseTrigger>
+            </Drawer.Header>
+            <Drawer.Body px={{ base: 3, md: 6 }} py={4} overflowY="auto">
+              <PriceCalendar
+                selectedDate={selectedDate}
+                anchorDate={anchorDate}
+                pricePreviews={pricePreviews}
+                failedDates={failedPreviewDates}
+                loading={pricePreviewLoading}
+                previewError={pricePreviewError}
+                onPrevious={onCalendarPrevious}
+                onNext={onCalendarNext}
+                onSelectDate={(date) => {
+                  onDateSelect(date);
+                  onOpenChange(false);
+                }}
+              />
+            </Drawer.Body>
+          </Drawer.Content>
+        </Drawer.Positioner>
+      </Portal>
+    </Drawer.Root>
+  );
+}
+
+function DateTeamCheckoutBar({
+  selectedDate,
+  selectedMoverCount,
+  totalPence,
+  loading,
+  canContinue,
+  continueLabel,
+  hasBreakdown,
+  priceDetailsOpen,
+  onTogglePriceDetails,
+  onBack,
+  onContinue,
+}: {
+  selectedDate: string;
+  selectedMoverCount: MoverCount;
+  totalPence: number | null;
+  loading: boolean;
+  canContinue: boolean;
+  continueLabel: string;
+  hasBreakdown: boolean;
+  priceDetailsOpen: boolean;
+  onTogglePriceDetails: () => void;
+  onBack: () => void;
+  onContinue: () => void;
+}) {
+  const totalLabel = typeof totalPence === "number" ? formatCanonicalPence(totalPence) : loading ? "Updating price" : "Unavailable";
+  const crewLabel = selectedMoverCount === 1 ? "1 Person" : "2 People";
+
+  return (
+    <Portal>
+      <Box
+        display={{ base: "block", md: "none" }}
+        position="fixed"
+        bottom={0}
+        left={0}
+        right={0}
+        zIndex={30}
+        mt={5}
+        mx={0}
+        px={4}
+        pt={3}
+        pb="calc(env(safe-area-inset-bottom, 0px) + 12px)"
+        borderTop={`1px solid ${bookingTheme.borderStrong}`}
+        bg="#FFFFFF"
+        boxShadow="0 -14px 34px rgba(20,50,60,0.12)"
+      >
+        <Box display="grid" gridTemplateColumns="44px minmax(0, 1fr) minmax(128px, 1fr)" gap={3} alignItems="stretch">
+          <Box
+            as="button"
+            aria-label="Back"
+            onClick={onBack}
+            w="44px"
+            h="56px"
+            borderRadius="md"
+            border={`1px solid ${bookingTheme.borderStrong}`}
+            color={bookingTheme.ink}
+            bg="#FFFFFF"
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+            _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+          >
+            <FiArrowLeft size={25} />
+          </Box>
+          <Box minW={0}>
+            <Text fontSize="sm" color={bookingTheme.ink} fontWeight={800} overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
+              {formatMoveDateSummary(selectedDate)} · {crewLabel}
+            </Text>
+            <Text fontSize="xs" color={bookingTheme.muted} fontWeight={800}>
+              Total
+            </Text>
+            <Text fontSize="3xl" lineHeight="1" color={bookingTheme.ink} fontWeight={900} whiteSpace="nowrap">
+              {totalLabel}
+            </Text>
+            {loading && (
+              <Text mt={1} fontSize="xs" color={bookingTheme.muted} fontWeight={900}>
+                Updating price
+              </Text>
+            )}
+            {hasBreakdown && (
+              <Box
+                as="button"
+                onClick={onTogglePriceDetails}
+                mt={2}
+                minH="24px"
+                color={bookingTheme.heroBlue}
+                fontSize="sm"
+                fontWeight={900}
+                textAlign="left"
+                aria-expanded={priceDetailsOpen}
+                _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+              >
+                Price details
+              </Box>
+            )}
+          </Box>
+          <Box
+            as="button"
+            onClick={() => {
+              if (canContinue) onContinue();
+            }}
+            aria-disabled={!canContinue ? "true" : undefined}
+            h="56px"
+            minW={0}
+            px={3}
+            borderRadius="md"
+            bg={canContinue ? bookingTheme.heroBlue : "#BFD3DC"}
+            color="#FFFFFF"
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+            gap={2}
+            fontSize="md"
+            fontWeight={900}
+            cursor={canContinue ? "pointer" : "not-allowed"}
+            _hover={canContinue ? { bg: "#2563EB" } : {}}
+            _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+          >
+            <Text as="span" overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
+              {canContinue ? "Continue" : continueLabel}
+            </Text>
+            {canContinue && <FiArrowRight size={22} />}
+          </Box>
+        </Box>
+      </Box>
+    </Portal>
   );
 }
 
@@ -3285,6 +3868,9 @@ function PriceOptionsStep({
   items,
   customItems,
   selectedDate,
+  flexibleDate,
+  earliestDate,
+  latestDate,
   selectedMoverCount,
   displayQuoteReference,
   calendarAnchor,
@@ -3313,6 +3899,9 @@ function PriceOptionsStep({
   items: InventoryLine[];
   customItems: CustomItemLine[];
   selectedDate: string;
+  flexibleDate: boolean;
+  earliestDate: string;
+  latestDate: string;
   selectedMoverCount: 1 | 2;
   displayQuoteReference: string;
   calendarAnchor: Date;
@@ -3334,6 +3923,11 @@ function PriceOptionsStep({
   onBack: () => void;
   onNext: () => void;
 }) {
+  const [dateFlexibilityMode, setDateFlexibilityMode] = useState(() => (
+    currentDateFlexibilityMode(selectedDate, flexibleDate, earliestDate, latestDate)
+  ));
+  const [monthCalendarOpen, setMonthCalendarOpen] = useState(false);
+  const [priceDetailsOpen, setPriceDetailsOpen] = useState(false);
   const selectedMoverPricePreviews = useMemo(
     () => pricePreviewsForMover(pricePreviews, selectedMoverCount),
     [pricePreviews, selectedMoverCount]
@@ -3353,7 +3947,7 @@ function PriceOptionsStep({
     selectedPreview &&
     (selectedPreview.requiredCrew ?? selectedPreview.crew?.movers ?? selectedMoverCount) > selectedMoverCount
   );
-  const selectedPreviewTotal = selectedCrewInvalid ? null : selectedPreview?.totalPence ?? null;
+  const selectedPreviewTotal = selectedCrewInvalid || !isFixedPreview(selectedPreview) ? null : selectedPreview.totalPence;
   const comparisonPrices = useMemo(() => getFixedPreviewPrices(selectedMoverPricePreviews), [selectedMoverPricePreviews]);
   const crewComparisonPrices = useMemo(
     () => getFixedPreviewPrices({
@@ -3371,6 +3965,22 @@ function PriceOptionsStep({
   const hasPreviewPrices = fixedPreviewValues(pricePreviews).length > 0;
   const addOnSummaries = selectedAddonSummaries(services, moveSize, selectedUnits, dismantleCount, assemblyCount);
   const addOnTotalPence = addOnSummaries.reduce((sum, addon) => sum + addon.amountPence, 0);
+  const allCalendarDays = useMemo(() => makePriceCalendarDays(calendarAnchor), [calendarAnchor]);
+  const displayedDateDays = useMemo(
+    () => filterCalendarDaysForFlexibility(allCalendarDays, selectedDate, calendarAnchor, dateFlexibilityMode),
+    [allCalendarDays, calendarAnchor, dateFlexibilityMode, selectedDate]
+  );
+  const displayedValidPrices = useMemo(() => displayedDateDays.flatMap((day) => {
+    const preview = selectedMoverPricePreviews[day.iso];
+    const requiredCrew = preview?.requiredCrew ?? preview?.crew?.movers ?? selectedMoverCount;
+    return isFixedPreview(preview) && requiredCrew <= selectedMoverCount ? [preview.totalPence] : [];
+  }), [displayedDateDays, selectedMoverCount, selectedMoverPricePreviews]);
+  const minimumDisplayedPrice = displayedValidPrices.length > 0 ? Math.min(...displayedValidPrices) : null;
+  const selectedIsLowestShown =
+    typeof selectedPreviewTotal === "number" &&
+    typeof minimumDisplayedPrice === "number" &&
+    selectedPreviewTotal === minimumDisplayedPrice;
+  const selectedHasBreakdown = Boolean(selectedPreview?.breakdown?.length);
   const canContinue = typeof selectedPreviewTotal === "number" && !pricePreviewLoading;
   const selectedRequiredCrew = selectedPreview?.requiredCrew ?? selectedPreview?.crew?.movers ?? null;
   const continueLabel = canContinue
@@ -3384,6 +3994,10 @@ function PriceOptionsStep({
           : "Select a date";
 
   const handleDateSelect = (date: string) => {
+    onDateSelect(date);
+  };
+
+  const handleDesktopDateSelect = (date: string) => {
     const preview = selectedMoverPricePreviews[date];
     const canAdvance =
       preview?.status === "FIXED" &&
@@ -3391,22 +4005,120 @@ function PriceOptionsStep({
     onDateSelect(date, { advance: canAdvance });
   };
 
+  const collectionLabel = routeLocationLabel(collection.address, "Collection");
+  const deliveryLabel = routeLocationLabel(delivery.address, "Delivery");
+  const selectedCrewLabel = selectedMoverCount === 1 ? "1 Person" : "2 People";
+
   return (
-    <Box position="relative">
-      <Box>
-        <Box display="grid" gridTemplateColumns={{ base: "1fr", lg: "minmax(0, 1fr) 364px" }} gap={6} alignItems="start">
-          <Box minW={0}>
-            <Box mb={8}>
-              <Text fontFamily="heading" fontSize={{ base: "3xl", md: "4xl" }} fontWeight={900} color="#3D3D3D">
-                Select a date
+    <Box position="relative" maxW="100%" overflowX="hidden">
+      <Box display="grid" gridTemplateColumns={{ base: "1fr", lg: "minmax(0, 1fr) 364px" }} gap={6} alignItems="start">
+        <Box minW={0}>
+          <VStack align="stretch" gap={{ base: 5, md: 6 }} pb={{ base: "160px", md: 0 }}>
+            <Box display={{ base: "block", md: "none" }}>
+              <HStack justify="space-between" mb={3}>
+                <Text fontSize="lg" fontWeight={900} color="#4B5563">
+                  Step 4 of 5
+                </Text>
+                <Text fontSize="lg" fontWeight={800} color="#4B5563">
+                  Date & team
+                </Text>
+              </HStack>
+              <Box h="7px" borderRadius="full" bg="#DDE3E8" overflow="hidden">
+                <Box w="80%" h="full" borderRadius="full" bg={bookingTheme.heroBlue} />
+              </Box>
+            </Box>
+
+            <Box>
+              <Text
+                as="h1"
+                fontFamily="heading"
+                fontSize={{ base: "3xl", md: "4xl" }}
+                fontWeight={900}
+                color={bookingTheme.ink}
+                lineHeight="1.08"
+              >
+                Choose your move date
               </Text>
-              <Text mt={1} fontSize={{ base: "md", md: "xl" }} color="#50646E">
+              <Text mt={2} display={{ base: "none", md: "block" }} fontSize="lg" color="#50646E">
                 Your delivery will be <Text as="span" fontWeight={900}>same day</Text>
               </Text>
             </Box>
+
+            <Box p={{ base: 4, md: 5 }} borderRadius="md" border={`1px solid ${bookingTheme.borderStrong}`} bg="#FFFFFF">
+              <HStack justify="space-between" align="center" gap={3}>
+                <VStack align="stretch" gap={3} minW={0}>
+                  <HStack gap={3} minW={0}>
+                    <Box color={bookingTheme.heroBlue} flexShrink={0}>
+                      <FiMapPin size={24} />
+                    </Box>
+                    <Text fontSize={{ base: "lg", md: "xl" }} color={bookingTheme.ink} fontWeight={800} overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
+                      {collectionLabel}
+                    </Text>
+                  </HStack>
+                  <HStack gap={3} minW={0}>
+                    <Box color="#0FA66A" flexShrink={0}>
+                      <FiMapPin size={24} />
+                    </Box>
+                    <Text fontSize={{ base: "lg", md: "xl" }} color={bookingTheme.ink} fontWeight={800} overflow="hidden" textOverflow="ellipsis" whiteSpace="nowrap">
+                      {deliveryLabel}
+                    </Text>
+                  </HStack>
+                </VStack>
+                {onEditRoute && (
+                  <Box
+                    as="button"
+                    onClick={onEditRoute}
+                    minH="44px"
+                    px={2}
+                    color={bookingTheme.heroBlue}
+                    fontSize="md"
+                    fontWeight={900}
+                    _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+                  >
+                    Edit
+                  </Box>
+                )}
+              </HStack>
+            </Box>
+
+            <Box>
+              <Text mb={3} fontSize={{ base: "2xl", md: "3xl" }} fontWeight={900} color={bookingTheme.ink}>
+                Choose your team
+              </Text>
+              <Box
+                role="radiogroup"
+                aria-label="Choose your moving team"
+                border={`1px solid ${bookingTheme.borderStrong}`}
+                borderRadius="md"
+                overflow="hidden"
+                bg="#FFFFFF"
+              >
+                <Box display="grid" gridTemplateColumns="repeat(2, minmax(0, 1fr))">
+                  <CrewOption
+                    movers={1}
+                    pricePence={onePersonPreview?.totalPence}
+                    priceTone={onePersonTone}
+                    loading={pricePreviewLoading}
+                    unavailable={(onePersonPreview?.requiredCrew ?? onePersonPreview?.crew?.movers ?? 1) > 1}
+                    unavailableLabel="2 required"
+                    selected={selectedMoverCount === 1}
+                    onClick={() => onMoverChange(1)}
+                  />
+                  <CrewOption
+                    movers={2}
+                    pricePence={twoPersonPreview?.totalPence}
+                    priceTone={twoPersonTone}
+                    loading={pricePreviewLoading}
+                    unavailable={false}
+                    selected={selectedMoverCount === 2}
+                    onClick={() => onMoverChange(2)}
+                  />
+                </Box>
+              </Box>
+            </Box>
+
             {addOnSummaries.length > 0 && (
               <Box
-                mb={5}
                 p={{ base: 4, md: 5 }}
                 borderRadius="md"
                 border={`1px solid ${bookingTheme.heroBlue}`}
@@ -3414,7 +4126,7 @@ function PriceOptionsStep({
                 color={bookingTheme.ink}
               >
                 <HStack justify="space-between" align="start" gap={4}>
-                  <Box>
+                  <Box minW={0}>
                     <Text fontSize="sm" fontWeight={900}>
                       Prices include your selected add-ons
                     </Text>
@@ -3423,11 +4135,12 @@ function PriceOptionsStep({
                     </Text>
                   </Box>
                   <Text fontFamily="mono" fontSize="sm" fontWeight={900} color={bookingTheme.primaryDark} whiteSpace="nowrap">
-                    +{formatPence(addOnTotalPence)}
+                    +{formatCanonicalPence(addOnTotalPence)}
                   </Text>
                 </HStack>
               </Box>
             )}
+
             <PriceCalculationPanel
               loading={pricePreviewLoading}
               hasPrices={hasPreviewPrices}
@@ -3435,62 +4148,115 @@ function PriceOptionsStep({
               collection={collection}
               delivery={delivery}
             />
-            <Box border={`1px solid ${bookingTheme.borderStrong}`} borderRadius="md" overflow="hidden" bg="#FFFFFF">
-              <Box display="grid" gridTemplateColumns="repeat(2, minmax(0, 1fr))">
-                <CrewOption
-                  movers={1}
-                  pricePence={onePersonPreview?.totalPence}
-                  priceTone={onePersonTone}
-                  loading={pricePreviewLoading}
-                  unavailable={(onePersonPreview?.requiredCrew ?? onePersonPreview?.crew?.movers ?? 1) > 1}
-                  unavailableLabel="2 required"
-                  selected={selectedMoverCount === 1}
-                  onClick={() => onMoverChange(1)}
-                />
-                <CrewOption
-                  movers={2}
-                  pricePence={twoPersonPreview?.totalPence}
-                  priceTone={twoPersonTone}
-                  loading={pricePreviewLoading}
-                  unavailable={false}
-                  selected={selectedMoverCount === 2}
-                  onClick={() => onMoverChange(2)}
-                />
+
+            <HStack justify="space-between" align="center" gap={3}>
+              <Box
+                as="button"
+                onClick={onCalendarPrevious}
+                aria-label="Previous calendar window"
+                w="44px"
+                h="44px"
+                borderRadius="md"
+                border={`1px solid ${bookingTheme.borderStrong}`}
+                bg="#FFFFFF"
+                color={bookingTheme.ink}
+                display="flex"
+                alignItems="center"
+                justifyContent="center"
+                _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+              >
+                <FiChevronLeft />
               </Box>
-              {pricePreviewError && (
-                <HStack
-                  px={4}
-                  py={3}
-                  justify="space-between"
-                  align="center"
-                  gap={3}
-                  borderBottom={`1px solid ${bookingTheme.border}`}
-                  bg={bookingTheme.dangerSoft}
-                  color={bookingTheme.danger}
-                >
-                  <HStack gap={2} minW={0}>
-                    <FiAlertTriangle />
-                    <Text fontSize="sm" fontWeight={900}>
-                      {pricePreviewError}
-                    </Text>
-                  </HStack>
-                  <Box
-                    as="button"
-                    onClick={onPreviewRetry}
-                    px={3}
-                    py={1.5}
-                    borderRadius="sm"
-                    bg="#FFFFFF"
-                    border={`1px solid ${bookingTheme.danger}`}
-                    color={bookingTheme.danger}
-                    fontSize="xs"
-                    fontWeight={900}
-                    flexShrink={0}
-                  >
-                    Retry
-                  </Box>
+              <Text flex="1" textAlign="center" fontSize={{ base: "2xl", md: "3xl" }} fontWeight={900} color={bookingTheme.ink}>
+                {formatMonthYear(calendarAnchor)}
+              </Text>
+              <Box
+                as="button"
+                onClick={() => setMonthCalendarOpen(true)}
+                minH="44px"
+                px={2}
+                color={bookingTheme.heroBlue}
+                fontSize={{ base: "sm", md: "md" }}
+                fontWeight={900}
+                whiteSpace="nowrap"
+                _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+              >
+                View all dates
+              </Box>
+              <Box
+                as="button"
+                onClick={onCalendarNext}
+                aria-label="Next calendar window"
+                w="44px"
+                h="44px"
+                borderRadius="md"
+                border={`1px solid ${bookingTheme.borderStrong}`}
+                bg="#FFFFFF"
+                color={bookingTheme.ink}
+                display="flex"
+                alignItems="center"
+                justifyContent="center"
+                _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+              >
+                <FiChevronRight />
+              </Box>
+            </HStack>
+
+            <DateFlexibilityRadioGroup value={dateFlexibilityMode} onChange={setDateFlexibilityMode} />
+
+            {pricePreviewError && (
+              <HStack
+                role="alert"
+                px={4}
+                py={3}
+                justify="space-between"
+                align="center"
+                gap={3}
+                borderRadius="md"
+                border={`1px solid ${bookingTheme.danger}`}
+                bg={bookingTheme.dangerSoft}
+                color={bookingTheme.danger}
+              >
+                <HStack gap={2} minW={0}>
+                  <FiAlertTriangle />
+                  <Text fontSize="sm" fontWeight={900}>
+                    {pricePreviewError}
+                  </Text>
                 </HStack>
-              )}
+                <Box
+                  as="button"
+                  onClick={onPreviewRetry}
+                  minH="44px"
+                  px={3}
+                  borderRadius="sm"
+                  bg="#FFFFFF"
+                  border={`1px solid ${bookingTheme.danger}`}
+                  color={bookingTheme.danger}
+                  fontSize="xs"
+                  fontWeight={900}
+                  flexShrink={0}
+                  _focusVisible={{ outline: `2px solid ${bookingTheme.danger}`, outlineOffset: "2px" }}
+                >
+                  Retry
+                </Box>
+              </HStack>
+            )}
+
+            <Box display={{ base: "block", md: "none" }}>
+              <DateCardScroller
+                days={displayedDateDays}
+                selectedDate={selectedDate}
+                pricePreviews={selectedMoverPricePreviews}
+                failedDates={failedPreviewDates}
+                loading={pricePreviewLoading}
+                previewError={pricePreviewError}
+                selectedIsLowestShown={selectedIsLowestShown}
+                onSelectDate={handleDateSelect}
+                onOpenMonth={() => setMonthCalendarOpen(true)}
+              />
+            </Box>
+
+            <Box display={{ base: "none", md: "block" }} borderRadius="md" overflow="hidden">
               <PriceCalendar
                 selectedDate={selectedDate}
                 anchorDate={calendarAnchor}
@@ -3500,10 +4266,29 @@ function PriceOptionsStep({
                 previewError={pricePreviewError}
                 onPrevious={onCalendarPrevious}
                 onNext={onCalendarNext}
-                onSelectDate={handleDateSelect}
+                onSelectDate={handleDesktopDateSelect}
               />
             </Box>
-            <HStack mt={4} gap={3} justify="space-between" align="center">
+
+            {selectedHasBreakdown && priceDetailsOpen && selectedPreview?.breakdown && (
+              <Box p={4} borderRadius="md" border={`1px solid ${bookingTheme.borderStrong}`} bg="#FFFFFF">
+                <Text fontSize="sm" fontWeight={900} color={bookingTheme.ink}>
+                  Price details
+                </Text>
+                <VStack mt={3} align="stretch" gap={2}>
+                  {selectedPreview.breakdown.map((line) => (
+                    <HStack key={line.key} justify="space-between" gap={3} fontSize="sm">
+                      <Text color={bookingTheme.muted}>{line.label}</Text>
+                      <Text fontFamily="mono" fontWeight={900} color={bookingTheme.ink}>
+                        {formatCanonicalPence(line.amountPence)}
+                      </Text>
+                    </HStack>
+                  ))}
+                </VStack>
+              </Box>
+            )}
+
+            <HStack display={{ base: "none", md: "flex" }} gap={3} justify="space-between" align="center">
               <Box
                 as="button"
                 onClick={onBack}
@@ -3520,18 +4305,26 @@ function PriceOptionsStep({
                 fontSize="md"
                 fontWeight={900}
                 _hover={{ bg: "#F8FBFC" }}
+                _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
               >
                 <FiArrowLeft />
                 Back
               </Box>
+              <Box minW={0} textAlign="center" color={bookingTheme.muted} fontSize="sm" fontWeight={800}>
+                {formatMoveDateSummary(selectedDate)} · {selectedCrewLabel}
+                {typeof selectedPreviewTotal === "number" && (
+                  <Text as="span" ml={2} color={bookingTheme.ink} fontWeight={900}>
+                    {formatCanonicalPence(selectedPreviewTotal)}
+                  </Text>
+                )}
+              </Box>
               <Box
                 as="button"
-                className={canContinue ? "ma-cta-attention ma-cta-scan" : undefined}
                 onClick={() => {
                   if (canContinue) onNext();
                 }}
                 aria-disabled={!canContinue ? "true" : undefined}
-                minW={{ base: "160px", md: "200px" }}
+                minW={{ md: "200px" }}
                 h="54px"
                 borderRadius="md"
                 bg={canContinue ? bookingTheme.heroBlue : "#BFD3DC"}
@@ -3544,42 +4337,72 @@ function PriceOptionsStep({
                 fontWeight={900}
                 cursor={canContinue ? "pointer" : "not-allowed"}
                 _hover={canContinue ? { bg: "#2563EB" } : {}}
+                _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
               >
                 {continueLabel}
               </Box>
             </HStack>
-          </Box>
-          <Box display={{ base: "none", lg: "block" }}>
-            <HStack justify="space-between" align="start" mb={7}>
-              <Box>
-                {displayQuoteReference && (
-                  <Text color={bookingTheme.muted}>Quote ref: {displayQuoteReference}</Text>
-                )}
-                <Text className="ma-quote-ref-phone" fontSize="3xl" color={bookingTheme.heroBlue} fontWeight={900}>07426 467 112</Text>
-              </Box>
-            </HStack>
-            <PriceOptionsSidebar
-              selectedUnits={selectedUnits}
-              moveSize={moveSize}
-              collection={collection}
-              delivery={delivery}
-              items={items}
-              customItems={customItems}
+
+            <DateTeamCheckoutBar
               selectedDate={selectedDate}
-              services={services}
-              dismantleCount={dismantleCount}
-              assemblyCount={assemblyCount}
-              totalPence={typeof selectedPreviewTotal === "number" ? selectedPreviewTotal : undefined}
-              priceTone={selectedPriceTone}
-              benchmarkSavingPercent={selectedBenchmarkSavingPercent}
-              totalLoading={pricePreviewLoading}
-              onEditRoute={onEditRoute}
-              onEditInventory={onEditInventory}
-              onEditDateAndAddOns={onEditDateAndAddOns}
+              selectedMoverCount={selectedMoverCount}
+              totalPence={selectedPreviewTotal}
+              loading={pricePreviewLoading}
+              canContinue={canContinue}
+              continueLabel={continueLabel}
+              hasBreakdown={selectedHasBreakdown}
+              priceDetailsOpen={priceDetailsOpen}
+              onTogglePriceDetails={() => setPriceDetailsOpen((value) => !value)}
+              onBack={onBack}
+              onContinue={onNext}
             />
-          </Box>
+          </VStack>
+        </Box>
+
+        <Box display={{ base: "none", lg: "block" }}>
+          <HStack justify="space-between" align="start" mb={7}>
+            <Box>
+              {displayQuoteReference && (
+                <Text color={bookingTheme.muted}>Quote ref: {displayQuoteReference}</Text>
+              )}
+              <Text className="ma-quote-ref-phone" fontSize="3xl" color={bookingTheme.heroBlue} fontWeight={900}>07426 467 112</Text>
+            </Box>
+          </HStack>
+          <PriceOptionsSidebar
+            selectedUnits={selectedUnits}
+            moveSize={moveSize}
+            collection={collection}
+            delivery={delivery}
+            items={items}
+            customItems={customItems}
+            selectedDate={selectedDate}
+            services={services}
+            dismantleCount={dismantleCount}
+            assemblyCount={assemblyCount}
+            totalPence={typeof selectedPreviewTotal === "number" ? selectedPreviewTotal : undefined}
+            priceTone={selectedPriceTone}
+            benchmarkSavingPercent={selectedBenchmarkSavingPercent}
+            totalLoading={pricePreviewLoading}
+            onEditRoute={onEditRoute}
+            onEditInventory={onEditInventory}
+            onEditDateAndAddOns={onEditDateAndAddOns}
+          />
         </Box>
       </Box>
+
+      <FullMonthCalendarDrawer
+        open={monthCalendarOpen}
+        selectedDate={selectedDate}
+        anchorDate={calendarAnchor}
+        pricePreviews={selectedMoverPricePreviews}
+        failedPreviewDates={failedPreviewDates}
+        pricePreviewLoading={pricePreviewLoading}
+        pricePreviewError={pricePreviewError}
+        onOpenChange={setMonthCalendarOpen}
+        onCalendarPrevious={onCalendarPrevious}
+        onCalendarNext={onCalendarNext}
+        onDateSelect={handleDateSelect}
+      />
     </Box>
   );
 }
@@ -6406,6 +7229,9 @@ export function InstantQuotePage() {
                 items={items}
                 customItems={customItems}
                 selectedDate={moveDate}
+                flexibleDate={flexibleDate}
+                earliestDate={earliestDate}
+                latestDate={latestDate}
                 selectedMoverCount={selectedMoverCount}
                 displayQuoteReference={displayQuoteReference}
                 calendarAnchor={calendarAnchor}
