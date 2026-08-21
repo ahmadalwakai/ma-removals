@@ -1,313 +1,166 @@
-import { type NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  calculateRemovalQuote,
-  normaliseQuoteInputForPricing,
-  type PricingVersionSnapshot,
-  type ResolvedInventoryItem,
-  type RouteMetrics,
-} from "@/lib/pricing/domain";
-import type { CompetitorPricingContext } from "@/lib/pricing/competitor-benchmarks";
-import type { PromotionPricingContext } from "@/lib/pricing/promotions";
-import { createQuoteRequestSchema, type AddressAccessInput } from "@/lib/quotes/schemas";
+  calculateCanonicalQuotePricing,
+  type CanonicalPricingDependencies,
+  type CanonicalPricingResult,
+} from "@/lib/quotes/canonical-pricing";
+import { createQuoteRequestSchema, type CreateQuoteRequest } from "@/lib/quotes/schemas";
 
 const previewRequestSchema = z.object({
-  quotes: z.array(createQuoteRequestSchema).min(1).max(80),
+  quotes: z.array(createQuoteRequestSchema).min(1).max(32),
 });
 
-export type PreviewInput = z.infer<typeof createQuoteRequestSchema>;
-export type PreviewResult = {
-  key: string;
-  date: string | null;
-  requestedMovers: number | null;
-  status: "FIXED" | "MANUAL_REVIEW";
-  totalPence: number | null;
-  originalTotalPence?: number | null;
-  discountTotalPence?: number;
-  promotionLabel?: string | null;
-  routeMileage?: number | null;
-  estimatedDurationMinutes?: number | null;
-  vehicle?: {
-    name: string | null;
-    multipleVehiclesRequired: boolean;
-    multipleTripsLikely: boolean;
-  };
-  crew?: {
-    movers: number;
-    loadingMinutes: number;
-    unloadingMinutes: number;
-    travelMinutes: number;
-    totalJobMinutes: number;
-  };
-  inventory?: {
-    totalVolumeM3: number;
-    totalWeightKg: number;
-    itemUnits: number;
-    fragileItemCount: number;
-    heavyOrSpecialItemCount: number;
-  };
-  breakdown?: Array<{ key: string; label: string; amountPence: number }>;
-  manualReviewReasons: string[];
-  estimateSource?: "authoritative";
-};
-
-type InventoryResolution = {
-  items: ResolvedInventoryItem[];
-  reasons: string[];
-};
-
-type RouteResolution = {
-  route: RouteMetrics | null;
-  reasons: string[];
-};
-
-type PromotionResolution = {
-  context: PromotionPricingContext;
-  invalidPromotionCode: string | null;
-};
-
-export interface PreviewDependencies {
-  getActivePricingVersion: () => Promise<PricingVersionSnapshot | null>;
-  resolveInventoryForQuote: (input: PreviewInput) => Promise<InventoryResolution>;
-  calculateServerRoute: (addresses: AddressAccessInput[]) => Promise<RouteResolution>;
-  getPromotionPricingContext: (input: PreviewInput) => Promise<PromotionResolution>;
-  getCompetitorPricingContext: (
-    input: PreviewInput,
-    routeMileage: number | null,
-    inventory: ResolvedInventoryItem[]
-  ) => Promise<CompetitorPricingContext>;
-}
-
-const AUTHORITATIVE_PREVIEW_TIMEOUT_MS = 3500;
-
-class PreviewTimeoutError extends Error {
-  constructor() {
-    super("Quote preview calculation timed out");
+function validationIssueCode(issue: { code: string; path: PropertyKey[] }): string {
+  const [firstPath, , thirdPath] = issue.path;
+  if (firstPath === "quotes" && issue.code === "too_big") return "TOO_MANY_PREVIEW_QUOTES";
+  if (firstPath === "quotes" && thirdPath === "inventory" && issue.code === "too_big") {
+    return "TOO_MANY_INVENTORY_ITEMS";
   }
+  return "INVALID_PREVIEW_REQUEST";
 }
 
-function previewKey(input: z.infer<typeof createQuoteRequestSchema>): string {
-  return `${input.moveDate ?? "flexible"}::${input.preferredMovers ?? "any"}`;
+function previewKey(date: string | null, movers: number) {
+  return `${date ?? "flexible"}::${movers}`;
 }
 
-function isLocalPreviewRequest(req: NextRequest) {
-  const host = req.nextUrl.hostname || req.headers.get("host")?.split(":")[0] || "";
-  return host === "localhost" || host === "127.0.0.1";
+function shouldExposeDiagnostics() {
+  return process.env.NODE_ENV === "development";
 }
 
-function quoteExpiry(settings: Record<string, number>, now: Date): Date {
-  const hours = typeof settings.quote_expiry_hours === "number" && settings.quote_expiry_hours > 0
-    ? settings.quote_expiry_hours
-    : 24;
-  return new Date(now.getTime() + hours * 60 * 60 * 1000);
-}
-
-function applyPromotionProtectionSettings(
-  context: PromotionPricingContext,
-  settings: Record<string, number>
-): PromotionPricingContext {
-  const minimumContribution = settings.minimum_contribution;
-  const minimumMargin = settings.minimum_margin_percent ?? settings.manual_review_min_margin_percent;
-
+function crewFromResult(result: CanonicalPricingResult, movers: number) {
+  const travelMinutes = result.routeMetrics?.durationMinutes ?? 0;
+  const totalHandlingMinutes = result.inventory.summary.totalHandlingMinutes ?? 0;
+  const loadingMinutes = Math.ceil(totalHandlingMinutes / 2);
+  const unloadingMinutes = totalHandlingMinutes - loadingMinutes;
   return {
-    ...context,
-    minimumContributionPence:
-      typeof minimumContribution === "number" && Number.isFinite(minimumContribution)
-        ? Math.round(minimumContribution * 100)
-        : 0,
-    minimumMarginPercent:
-      typeof minimumMargin === "number" && Number.isFinite(minimumMargin)
-        ? minimumMargin
-        : null,
-    allowZeroMargin: settings.allow_zero_margin === 1,
-    allowNegativeMargin: settings.allow_negative_margin === 1,
+    movers: result.requiredCrew ?? movers,
+    requestedMovers: movers,
+    loadingMinutes,
+    unloadingMinutes,
+    travelMinutes,
+    totalJobMinutes: travelMinutes + totalHandlingMinutes,
   };
 }
 
-async function defaultPreviewDependencies(): Promise<PreviewDependencies> {
-  const [
-    versionRepository,
-    quoteService,
-    routing,
-    promotionRepository,
-    competitorRepository,
-  ] = await Promise.all([
-    import("@/lib/pricing/version-repository"),
-    import("@/lib/quotes/service"),
-    import("@/lib/routing/mapbox"),
-    import("@/lib/pricing/promotion-repository"),
-    import("@/lib/pricing/competitor-repository"),
-  ]);
+export async function buildQuotePricePreview(
+  quote: CreateQuoteRequest,
+  dependencies: CanonicalPricingDependencies = {}
+) {
+  const movers = quote.preferredMovers ?? 1;
+  const date = quote.moveDate ?? null;
+  const result = await calculateCanonicalQuotePricing(quote, dependencies);
+
+  if (result.status === "FIXED") {
+    return {
+      key: previewKey(date, movers),
+      date,
+      requestedMovers: movers,
+      status: "FIXED" as const,
+      totalPence: result.totalPence,
+      originalTotalPence: result.totalPence,
+      discountTotalPence: 0,
+      promotionLabel: null,
+      pricingAlgorithmVersion: result.pricingAlgorithmVersion,
+      competitorBenchmarkId: result.competitorBenchmarkId,
+      benchmarkPricePence: result.benchmarkPricePence,
+      savingPercent: result.savingPercent,
+      canonicalClassification: result.canonicalInput.classification,
+      referenceProfileId: result.referenceProfile.profileId,
+      referenceProfileVersion: result.referenceProfile.profileVersion,
+      requiredCrew: result.requiredCrew,
+      serverInputHash: result.serverInputHash,
+      explanation: result.explanation,
+      routeMileage: result.routeMetrics.distanceMiles,
+      estimatedDurationMinutes: result.routeMetrics.durationMinutes,
+      vehicle: {
+        name: null,
+        multipleVehiclesRequired: false,
+        multipleTripsLikely: false,
+      },
+      inventory: result.inventory.summary,
+      breakdown: result.breakdown,
+      estimateSource: "authoritative" as const,
+      crew: crewFromResult(result, movers),
+      manualReviewReasons: [],
+      ...(shouldExposeDiagnostics() ? {
+        demandRatios: result.demandRatios,
+        adjustmentBps: result.adjustmentBps,
+        timingMs: result.timingMs,
+      } : {}),
+    };
+  }
 
   return {
-    getActivePricingVersion: versionRepository.getActivePricingVersion,
-    resolveInventoryForQuote: quoteService.resolveInventoryForQuote,
-    calculateServerRoute: routing.calculateServerRoute,
-    getPromotionPricingContext: promotionRepository.getPromotionPricingContext,
-    getCompetitorPricingContext: competitorRepository.getCompetitorPricingContext,
-  };
-}
-
-function manualPreview(input: PreviewInput, reasons: string[]): PreviewResult {
-  return {
-    key: previewKey(input),
-    date: input.moveDate ?? null,
-    requestedMovers: input.preferredMovers ?? null,
-    status: "MANUAL_REVIEW",
+    key: previewKey(date, movers),
+    date,
+    requestedMovers: movers,
+    status: "MANUAL_REVIEW" as const,
     totalPence: null,
     originalTotalPence: null,
     discountTotalPence: 0,
     promotionLabel: null,
-    routeMileage: null,
-    estimatedDurationMinutes: null,
+    pricingAlgorithmVersion: result.pricingAlgorithmVersion,
+    competitorBenchmarkId: null,
+    benchmarkPricePence: null,
+    savingPercent: null,
+    canonicalClassification: result.canonicalInput?.classification ?? null,
+    referenceProfileId: result.referenceProfile?.profileId ?? null,
+    referenceProfileVersion: result.referenceProfile?.profileVersion ?? null,
+    requiredCrew: result.requiredCrew ?? null,
+    serverInputHash: result.serverInputHash,
+    explanation: result.explanation,
+    routeMileage: result.routeMetrics?.distanceMiles ?? null,
+    estimatedDurationMinutes: result.routeMetrics?.durationMinutes ?? null,
+    vehicle: {
+      name: null,
+      multipleVehiclesRequired: false,
+      multipleTripsLikely: false,
+    },
+    inventory: result.inventory.summary,
     breakdown: [],
-    manualReviewReasons: reasons,
-    estimateSource: "authoritative",
+    estimateSource: "authoritative" as const,
+    crew: crewFromResult(result, movers),
+    manualReviewReasons: result.reasonCodes,
+    ...(shouldExposeDiagnostics() ? { timingMs: result.timingMs } : {}),
   };
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  promise.catch(() => undefined);
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timeout = setTimeout(() => reject(new PreviewTimeoutError()), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
-
-export async function buildAuthoritativePreviews(
-  quotes: PreviewInput[],
-  dependencies?: PreviewDependencies
-): Promise<PreviewResult[]> {
-  if (quotes.length === 0) return [];
-
-  const deps = dependencies ?? await defaultPreviewDependencies();
-  const pricingVersion = await deps.getActivePricingVersion();
-  const now = new Date();
-  const expiresAt = quoteExpiry(pricingVersion?.settings ?? {}, now);
-  const settings = pricingVersion?.settings ?? {};
-
-  return Promise.all(quotes.map(async (input) => {
-    const addresses = [
-      input.collection,
-      ...(input.additionalStop ? [input.additionalStop] : []),
-      input.delivery,
-    ];
-    const [inventoryResult, routeResult] = await Promise.all([
-      deps.resolveInventoryForQuote(input),
-      deps.calculateServerRoute(addresses),
-    ]);
-    const pricingInput = normaliseQuoteInputForPricing(input, inventoryResult.items);
-    const [promotion, competitor] = await Promise.all([
-      deps.getPromotionPricingContext(pricingInput),
-      deps.getCompetitorPricingContext(pricingInput, routeResult.route?.distanceMiles ?? null, inventoryResult.items),
-    ]);
-
-    if (promotion.invalidPromotionCode) {
-      return {
-        key: previewKey(input),
-        date: input.moveDate ?? null,
-        requestedMovers: input.preferredMovers ?? null,
-        status: "MANUAL_REVIEW" as const,
-        totalPence: null,
-        manualReviewReasons: ["Promotion code is not valid"],
-        estimateSource: "authoritative" as const,
-      };
-    }
-
-    const result = calculateRemovalQuote({
-      input: pricingInput,
-      inventory: inventoryResult.items,
-      route: routeResult.route,
-      pricingVersion,
-      promotionContext: applyPromotionProtectionSettings(promotion.context, settings),
-      competitorContext: competitor,
-      now,
-      quoteExpiresAt: expiresAt,
-    });
-    const manualReviewReasons = Array.from(new Set([
-      ...inventoryResult.reasons,
-      ...routeResult.reasons,
-      ...result.manualReviewReasons,
-    ]));
-    const status = manualReviewReasons.length > 0 ? "MANUAL_REVIEW" : result.status;
-
-    return {
-      key: previewKey(input),
-      date: input.moveDate ?? null,
-      requestedMovers: input.preferredMovers ?? null,
-      status,
-      totalPence: status === "FIXED" ? result.finalTotalPence : null,
-      originalTotalPence: result.customerSummary.originalTotalPence,
-      discountTotalPence: result.customerSummary.discountTotalPence,
-      promotionLabel: result.customerSummary.promotionLabel,
-      routeMileage: result.customerSummary.routeMileage,
-      estimatedDurationMinutes: result.customerSummary.estimatedDurationMinutes,
-      vehicle: result.vehicleRecommendation,
-      crew: result.crewRecommendation,
-      inventory: result.inventoryMetrics,
-      breakdown: status === "FIXED" ? result.customerBreakdown : [],
-      manualReviewReasons,
-      estimateSource: "authoritative" as const,
-    };
-  }));
-}
-
-export async function POST(req: NextRequest) {
-  try {
-    const parsed = previewRequestSchema.safeParse(await req.json());
+export function createQuotePreviewPostHandler(dependencies: CanonicalPricingDependencies = {}) {
+  return async function POST(req: Request) {
+    const validationStart = performance.now();
+    const parsed = previewRequestSchema.safeParse(await req.json().catch(() => null));
+    const requestValidationMs = Math.round((performance.now() - validationStart) * 10) / 10;
     if (!parsed.success) {
+      const issues = parsed.error.issues.map((issue) => ({
+        code: validationIssueCode(issue),
+        path: issue.path.join("."),
+      }));
       return NextResponse.json(
-        { error: "Invalid quote preview request", issues: parsed.error.issues.map((issue) => issue.message) },
+        {
+          error: "Unable to load prices. Please retry.",
+          code: issues[0]?.code ?? "INVALID_PREVIEW_REQUEST",
+          issues,
+          ...(shouldExposeDiagnostics() ? { timingMs: { requestValidation: requestValidationMs } } : {}),
+        },
         { status: 400 }
       );
     }
 
-    if (isLocalPreviewRequest(req)) {
-      const previews = parsed.data.quotes.map((input) => manualPreview(input, [
-        "AUTHORITATIVE_ROUTE_UNAVAILABLE: Local preview cannot produce an automatic benchmark price without server-authoritative routing",
-      ]));
-      return NextResponse.json({ previews }, {
-        headers: {
-          "Cache-Control": "no-store",
-          "X-Quote-Preview-Source": "manual-local",
-        },
-      });
-    }
-
-    const authoritative = buildAuthoritativePreviews(parsed.data.quotes);
-
-    try {
-      const previews = await withTimeout(authoritative, AUTHORITATIVE_PREVIEW_TIMEOUT_MS);
-      return NextResponse.json({ previews }, {
-        headers: {
-          "Cache-Control": "no-store",
-          "X-Quote-Preview-Source": "authoritative",
-        },
-      });
-    } catch (error) {
-      if (!(error instanceof PreviewTimeoutError)) {
-        console.warn("Authoritative quote preview failed; returning manual review previews:", error);
-      }
-      const previews = parsed.data.quotes.map((input) => manualPreview(input, [
-        "MANUAL_REVIEW_REQUIRED: Authoritative benchmark preview was unavailable before timeout",
-      ]));
-      return NextResponse.json({ previews }, {
-        headers: {
-          "Cache-Control": "no-store",
-          "X-Quote-Preview-Source": "manual",
-        },
-      });
-    }
-
-  } catch (error) {
-    console.error("Quote preview failed:", error);
-    return NextResponse.json({ error: "Unable to preview quote price" }, { status: 500 });
-  }
+    const pricingDependencies: CanonicalPricingDependencies = {
+      ...dependencies,
+      routeCache: dependencies.routeCache ?? new Map(),
+      inventoryItemsCache: dependencies.inventoryItemsCache ?? new Map(),
+      competitorBenchmarksCache: dependencies.competitorBenchmarksCache ?? new Map(),
+    };
+    const previews = await Promise.all(
+      parsed.data.quotes.map((quote) => buildQuotePricePreview(quote, pricingDependencies))
+    );
+    return NextResponse.json({
+      previews,
+      ...(shouldExposeDiagnostics() ? { timingMs: { requestValidation: requestValidationMs } } : {}),
+    });
+  };
 }
+
+export const POST = createQuotePreviewPostHandler();

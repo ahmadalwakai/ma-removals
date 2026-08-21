@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type { AddressAccessInput } from "@/lib/quotes/schemas";
-import type { RouteMetrics } from "@/lib/pricing/domain";
+import type { RouteMetrics } from "@/lib/routing/types";
 
 const METERS_TO_MILES = 0.000621371;
 const ROUTE_REQUEST_TIMEOUT_MS = 8_000;

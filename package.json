@@ -9,10 +9,11 @@
     "start": "node ./node_modules/next/dist/bin/next start",
     "lint": "node ./node_modules/eslint/bin/eslint.js",
     "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
-    "test": "node --import tsx --test tests/pricing-domain.test.ts tests/price-preview-cache.test.ts",
+    "test": "node --import tsx --test tests/canonical-pricing.test.ts",
     "postinstall": "node ./node_modules/prisma/build/index.js generate",
-    "seed:items": "npx tsx prisma/seed-items.ts",
-    "seed:pricing": "npx tsx prisma/seed-pricing.ts"
+    "seed:items": "node ./node_modules/tsx/dist/cli.mjs prisma/seed-items.ts",
+    "item-metrics:v2:generate": "node ./scripts/generate-item-metrics-v2.mjs",
+    "item-metrics:v2:backfill": "node ./node_modules/tsx/dist/cli.mjs scripts/backfill-item-metrics-v2.ts --dry-run"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",

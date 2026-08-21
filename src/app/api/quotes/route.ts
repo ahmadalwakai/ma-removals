@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
     }
 
     const quote = await withTimeout(createQuote(parsed.data), QUOTE_CREATION_TIMEOUT_MS);
-    return NextResponse.json({ quote }, { status: quote.status === "FIXED" ? 201 : 202 });
+    return NextResponse.json({ quote }, { status: 202 });
   } catch (error) {
     if (error instanceof QuoteCreationTimeoutError) {
       return NextResponse.json(

@@ -37,12 +37,17 @@ import {
 } from "react-icons/fi";
 import { AddressAutocomplete } from "@/components/booking/AddressAutocomplete";
 import {
-  attachPricePreviewScope,
+  buildPricePreviewScopeKey,
+  buildPricePreviewChunks,
+  canonicalPreviewInventorySignature,
+  canonicalBenchmarkSavingPercent,
   filterPricePreviewsByScope,
+  mergePricePreviewRecords,
   shouldAcceptPricePreviewResponse,
-} from "@/lib/booking/price-preview-cache";
-import { packingChargePenceForMove, type PackingMode } from "@/lib/pricing/packing";
-import { formatPence } from "@/lib/pricing";
+  stablePreviewStringify,
+} from "@/lib/booking/quote-preview-cache";
+import { packingChargePenceForMove, type PackingMode } from "@/lib/packing";
+import { formatPence } from "@/lib/money";
 import type { AddressData } from "@/types/booking";
 
 type MapboxModule = typeof import("mapbox-gl");
@@ -80,7 +85,6 @@ const MOVER_COUNTS = [1, 2] as const;
 type MoverCount = (typeof MOVER_COUNTS)[number];
 const PRICE_PREVIEW_CLIENT_TIMEOUT_MS = 12_000;
 const QUOTE_REQUEST_CLIENT_TIMEOUT_MS = 20_000;
-const CLIENT_ESTIMATED_VOLUME_PER_ITEM_M3 = 0.81;
 
 const STEPS = [
   "Move details",
@@ -127,7 +131,7 @@ const ROOMS = [
 
 type RoomValue = (typeof ROOMS)[number]["value"];
 
-const ROOM_ITEM_LABELS: Record<RoomValue, string[]> = {
+const ROOM_ITEM_LABELS = {
   "bedroom": [
     "Single Bed & Mattress",
     "Double Bed & Mattress",
@@ -199,9 +203,11 @@ const ROOM_ITEM_LABELS: Record<RoomValue, string[]> = {
     "Storage Trunk",
     "Backpack",
   ],
-};
+} as const satisfies Record<RoomValue, readonly string[]>;
 
-const ITEM_MATCH_KEYWORDS: Record<string, string[]> = {
+type RoomItemLabel = (typeof ROOM_ITEM_LABELS)[RoomValue][number];
+
+const ITEM_MATCH_KEYWORDS: Record<RoomItemLabel, string[]> = {
   "Single Bed & Mattress": ["single", "bed"],
   "Double Bed & Mattress": ["double", "bed"],
   "Kingsize Bed & Mattress": ["king", "bed"],
@@ -258,16 +264,74 @@ const ITEM_MATCH_KEYWORDS: Record<string, string[]> = {
   "Backpack": ["backpack"],
 };
 
-const ITEM_ID_OVERRIDES: Record<string, string[]> = {
+const ITEM_ID_OVERRIDES: Record<RoomItemLabel, string[]> = {
+  "Single Bed & Mattress": ["single-bed-frame-sussex-white"],
+  "Double Bed & Mattress": [
+    "double-bed-frame-harper-storage-mattress",
+    "double-bed-frame-cavill-fabric-grey",
+    "double-bed-frame-florence-luxury",
+  ],
+  "Kingsize Bed & Mattress": [
+    "king-bed-frame-classic-luxe-storage",
+    "king-bed-frame-cavill-fabric-grey",
+    "ottoman-bed-frame-upholstered-king-linen-fabric",
+  ],
+  "Single Wardrobe": [
+    "wardrobe-single-door-personal-laminate-cabinet",
+    "wardrobe-single-door-modern-luxury-wooden",
+    "wardrobe-single-door-space-saving-bedroom-storage-unit",
+  ],
+  "Double Wardrobe": [
+    "mirrored-wardrobe-better-home-products-wood-double-sliding",
+    "wardrobe-double-door-harmony-wood-better-home",
+    "sliding-door-wardrobe-jubest-48-double-24-5-x80",
+  ],
   "Chest Of Drawers": ["chest-drawers-mahogany", "dresser-antique-rosewood", "cassettone-dresser-chestnut"],
   "Bedside Table": ["end-table-industrial-square-foluban", "end-table-4-tier-tribesigns", "side-table-round-2-tier-fantersi"],
-  "Dressing Table": ["dresser-antique-rosewood", "changing-table-dresser-combo", "dresser-5drawer-changing-table"],
+  "Dressing Table": ["dresser-5drawer-changing-table", "changing-table-dresser-combo", "dresser-antique-rosewood"],
+  "Television": ["television-55inch-lg-oled-c4", "television-50inch-smart-4k-google", "television-43inch-samsung-crystal"],
   "Side Table": ["side-table-round-2-tier-fantersi", "end-table-4-tier-tribesigns", "end-table-industrial-square-foluban"],
+  "Two Seater Sofa": ["chesterfield-sofa-2-seat-antique-tan"],
+  "Three Seater Sofa": ["recliner-sofa-3-seat-leather-tufted", "sofa-3-seat-fabric-modern-lestar", "sofa-3-seat-couch-storage-layer"],
+  "Armchair": ["armchair-1-seat-accent-chair", "single-sofa-chair-1-seat-modern"],
+  "Coffee Table": ["coffee-table-modern-povison-living-room", "coffee-table-round-lift-top-wynny", "coffee-table-carved-walnut"],
+  "TV Stand": ["tv-stand-farmhouse-75inch-plus", "tv-stand-65inch-enhomee-large"],
+  "Bookcase": ["bookcase-5-shelf-wooden-standing", "bookshelf-living-room-storage-sunesa"],
+  "Rug": ["area-rug-8x10-oriental", "area-rug-9x12-non-slip", "persian-rug-traditional-medallion"],
+  "Lamp": ["floor-lamp-tripod-66inch-black", "floor-lamp-white-arc-modern", "table-lamp-set-2-farmhouse-usb-ports"],
+  "Dining Table": ["dining-table-solid-wood-extendable", "dining-table-extendable-55inch", "counter-height-dining-table"],
+  "Dining Chairs": ["dining-chairs-mid-century-set6", "dining-chairs-faux-leather-set", "dining-chairs-tufted-set2"],
+  "Sideboard": ["sideboard-buffet-66inch-large", "sideboard-cabinet-66inch-grey", "sideboard-cambridge-series"],
+  "Display Cabinet": ["display-cabinet-curio-lighted", "china-cabinet-curio-lighted", "display-cabinet-vintage"],
+  "Wine Rack": ["wine-rack-bar-cabinet", "wine-cabinet-58inch-storage"],
+  "Bar Stools": ["bar-stools-swivel-set4", "bar-stools-counter-height-full", "bar-stools-velvet-set2"],
+  "Console Table": ["console-table-solid-wood-48inch", "console-table-59inch-drawers-williamspace", "console-table-rustic-drawers-shelf"],
+  "Mirror": ["mirror-black-50x30-wall", "mirror-large-47x32-gold-living-room", "dining-mirror-wall-decor"],
+  "Fridge Freezer": ["american-fridge-freezer-bosch", "refrigerator-top-freezer-7-5cuft"],
+  "Washing Machine": ["washing-machine-standard-dimensions", "washing-machine-large-capacity-best", "washing-machine-types-whirlpool"],
+  "Dishwasher": ["dishwasher-portable-vs-builtin", "dishwasher-portable-countertop-aooden", "dishwasher-countertop-portable"],
+  "Microwave": ["microwave-countertop-1-1cuft-1000watt", "microwave-countertop-best-2025", "microwave-small-0-7cuft-700watt"],
+  "Cooker": ["range-stove-oven-difference", "gas-range-cooktop-48inch-duura"],
+  "Chest Freezer": ["chest-freezer-7cuft-white-frigidaire", "chest-freezer-mini-5cuft-black", "chest-freezer-small-3-5cuft-mini"],
+  "Small Appliance": ["stand-mixer-kitchenaid-artisan-5quart", "blender-food-processor-combo-tested", "food-processor-blender-8in1-kognita"],
   "Kitchen Boxes": [
-    "moving-boxes-uboxes-with-handles-10-premium",
     "moving-boxes-uboxes-1-room-economy-kit-15-boxes",
     "moving-boxes-8-best-top-moving-house-boxes",
+    "moving-boxes-uboxes-with-handles-10-premium",
   ],
+  "Bathroom Cabinet": ["linen-cabinet-white-67inch", "storage-cabinet-tall-white", "medicine-cabinet-mirror-led"],
+  "Laundry Basket": ["laundry-basket-cabinet", "laundry-hamper-bamboo"],
+  "Bathroom Shelf": ["corner-shelf-unit-black", "over-toilet-shelf-bamboo", "ladder-shelf-decorative-4ft"],
+  "Towel Rack": ["ladder-towel-rack-wooden", "towel-storage-rack-wall", "towel-rack-wall-28inch"],
+  "Bathroom Stool": ["bathroom-stool-teak-round", "shower-stool-teak-solid", "vanity-stool-upholstered"],
+  "Garden Table": ["outdoor-dining-acacia-wood-table", "outdoor-table-chairs-7pc-artbuske"],
+  "Garden Chairs": ["outdoor-lounge-chair-acacia-wood", "outdoor-lounge-chair-egg-wicker", "outdoor-lounge-chair-namaro-ikea"],
+  "BBQ": ["bbq-grill-3in1-gas-charcoal-combo", "bbq-grill-deluxe-charcoal-gas", "bbq-grill-propane-gas-charcoal"],
+  "Lawnmower": ["lawnmower-30-rear-engine-rider", "lawnmower-riding-home-depot", "lawnmower-cub-cadet-riding"],
+  "Garden Shed": ["garden-shed-storage-organization", "garden-shed-organization-supplies", "garden-shed-outdoor-storage-cabinet"],
+  "Outdoor Storage Box": ["outdoor-storage-box-120-gallon", "outdoor-storage-box-100-gallon"],
+  "Garden Planters": ["garden-planter-terra-cotta-large", "garden-planter-round-shallow-glazed", "garden-planter-ceramic-mosaic-large"],
+  "Parasol": ["outdoor-parasol-tropical-thatched-straw"],
   "Large Box": [
     "moving-boxes-uboxes-1-room-economy-kit-15-boxes",
     "moving-boxes-8-best-top-moving-house-boxes",
@@ -278,9 +342,14 @@ const ITEM_ID_OVERRIDES: Record<string, string[]> = {
     "moving-boxes-uboxes-1-room-economy-kit-15-boxes",
     "moving-boxes-8-best-top-moving-house-boxes",
   ],
+  "Suitcase": ["suitcase-luggage-melalenia-sets-7-piece", "suitcase-luggage-zimtown-3-piece-nested-spinner-tsa-lock-pink", "suitcase-luggage-extra-large-33-lightweight-4-wheel-abs-hard-shell"],
+  "Travel Bag": ["travel-bag-litvyak-duffle-50l-canvas", "travel-luggage-bags-brake-spinner-wheels"],
+  "Garment Bag": ["garment-bag-60-deluxe-travel-wallybags"],
+  "Storage Trunk": ["storage-trunk-signature-design-ashley-kettleby", "trunk-decorative-large", "trunk-antique-steamer"],
+  "Backpack": ["backpack-rucksack-ll-bean-continental"],
 };
 
-const ITEM_KEYWORD_GROUP_OVERRIDES: Record<string, string[][]> = {
+const ITEM_KEYWORD_GROUP_OVERRIDES: Partial<Record<RoomItemLabel, string[][]>> = {
   "Chest Of Drawers": [["chest", "drawers"], ["dresser"]],
   "Bedside Table": [["bedside", "table"], ["end", "table"], ["side", "table"]],
   "Dressing Table": [["dressing", "table"], ["dresser"]],
@@ -421,11 +490,17 @@ interface QuoteResponse {
   reference: string;
   status: "FIXED" | "MANUAL_REVIEW";
   pricingVersion: number | null;
+  pricingAlgorithmVersion: string | null;
+  competitorBenchmarkId: string | null;
+  serverInputHash: string | null;
   expiresAt: string;
   totalPence: number | null;
   originalTotalPence: number | null;
   discountTotalPence: number;
+  benchmarkPricePence?: number | null;
+  savingPercent?: number | null;
   promotionLabel: string | null;
+  explanation: string | null;
   routeMileage: number | null;
   estimatedDurationMinutes: number | null;
   vehicle: {
@@ -461,6 +536,17 @@ interface QuotePricePreview {
   originalTotalPence?: number | null;
   discountTotalPence?: number;
   promotionLabel?: string | null;
+  pricingAlgorithmVersion?: string | null;
+  competitorBenchmarkId?: string | null;
+  benchmarkPricePence?: number | null;
+  canonicalClassification?: "FULL_HOUSE" | "INDIVIDUAL_ITEMS" | "STUDENT_MOVE" | "MAN_AND_VAN" | "BUSINESS_REMOVAL" | "UNSUPPORTED" | null;
+  referenceProfileId?: string | null;
+  referenceProfileVersion?: string | null;
+  requiredCrew?: number | null;
+  savingPercent?: number | null;
+  adjustmentBps?: number | null;
+  serverInputHash?: string | null;
+  explanation?: string | null;
   routeMileage?: number | null;
   estimatedDurationMinutes?: number | null;
   vehicle?: QuoteResponse["vehicle"];
@@ -469,6 +555,7 @@ interface QuotePricePreview {
   estimateSource?: "authoritative" | "fast";
   crew?: {
     movers: number;
+    requestedMovers?: number;
     loadingMinutes: number;
     unloadingMinutes: number;
     travelMinutes: number;
@@ -514,6 +601,7 @@ const PRICE_TONE_META: Record<PriceTone, {
 type InventoryListItem = ApiItem & {
   displayName: string;
   room: RoomValue;
+  pricingItemId: string;
 };
 
 function initialAccess(): AccessDraft {
@@ -564,19 +652,74 @@ function itemMatchesKeywordGroup(item: ApiItem, keywords: string[]) {
 }
 
 function findUnusedItemByIds(items: ApiItem[], ids: string[], used: Set<string>) {
-  const wanted = new Set(ids.map((id) => normaliseSearch(id)));
-  return items.find((item) => (
-    !used.has(item.id) &&
-    (wanted.has(normaliseSearch(item.id)) || wanted.has(normaliseSearch(item.slug)))
-  ));
+  for (const id of ids) {
+    const wanted = normaliseSearch(id);
+    const match = items.find((item) => (
+      !used.has(item.id) &&
+      !used.has(item.slug) &&
+      (wanted === normaliseSearch(item.id) || wanted === normaliseSearch(item.slug))
+    ));
+    if (match) return match;
+  }
+  return null;
 }
 
 function findUnusedItemByKeywords(items: ApiItem[], keywordGroups: string[][], used: Set<string>) {
   for (const keywords of keywordGroups) {
-    const match = items.find((item) => !used.has(item.id) && itemMatchesKeywordGroup(item, keywords));
+    const match = items.find((item) => !used.has(item.id) && !used.has(item.slug) && itemMatchesKeywordGroup(item, keywords));
     if (match) return match;
   }
   return null;
+}
+
+function isRoomItemLabel(value: string): value is RoomItemLabel {
+  return Object.values(ROOM_ITEM_LABELS).some((labels) => (labels as readonly string[]).includes(value));
+}
+
+function itemIdsForDisplayName(displayName: string) {
+  return isRoomItemLabel(displayName) ? ITEM_ID_OVERRIDES[displayName] : [];
+}
+
+function keywordGroupsForDisplayName(displayName: string) {
+  if (isRoomItemLabel(displayName)) {
+    return ITEM_KEYWORD_GROUP_OVERRIDES[displayName] ?? [ITEM_MATCH_KEYWORDS[displayName]];
+  }
+  return [normaliseSearch(displayName).split(" ").filter(Boolean)];
+}
+
+function itemMatchForDisplayName(categories: ApiCategory[], displayName: string, used = new Set<string>()) {
+  const allItems = categories.flatMap((category) => category.items);
+  const keywordGroups = keywordGroupsForDisplayName(displayName);
+
+  return (
+    findUnusedItemByIds(allItems, itemIdsForDisplayName(displayName), used) ??
+    findUnusedItemByKeywords(allItems, keywordGroups, used)
+  );
+}
+
+function itemPricingIdentity(item: ApiItem) {
+  return item.slug || item.id;
+}
+
+function findCatalogueItemByIdentity(categories: ApiCategory[], itemId: string) {
+  const wanted = normaliseSearch(itemId);
+  return categories
+    .flatMap((category) => category.items)
+    .find((candidate) => (
+      wanted === normaliseSearch(candidate.id) ||
+      wanted === normaliseSearch(candidate.slug)
+    ));
+}
+
+function resolveInventoryPayloadItemId(categories: ApiCategory[], item: InventoryLine) {
+  const catalogueMatch = findCatalogueItemByIdentity(categories, item.itemId);
+  if (catalogueMatch) return itemPricingIdentity(catalogueMatch);
+
+  const displayNameMatch = itemMatchForDisplayName(categories, item.name);
+  if (displayNameMatch) return itemPricingIdentity(displayNameMatch);
+
+  if (item.source === "preset" || item.itemId.startsWith("preset-")) return null;
+  return item.itemId;
 }
 
 function buildInventoryRows(categories: ApiCategory[], roomValue: RoomValue): InventoryListItem[] {
@@ -596,23 +739,24 @@ function buildInventoryRows(categories: ApiCategory[], roomValue: RoomValue): In
       findUnusedItemByKeywords(allItems, keywordGroups, used);
     const preset = QUICK_ITEM_PRESETS[displayName];
 
+    if (visualMatch) {
+      used.add(visualMatch.id);
+      used.add(visualMatch.slug);
+      return [{ ...visualMatch, displayName, name: displayName, room: roomValue, pricingItemId: visualMatch.slug }];
+    }
+
     if (preset && !used.has(preset.id)) {
       used.add(preset.id);
       return [{
         ...preset,
-        imagePath: visualMatch?.imagePath ?? preset.imagePath,
         displayName,
         name: displayName,
         room: roomValue,
+        pricingItemId: preset.id,
       }];
     }
 
-    const match =
-      visualMatch;
-
-    if (!match) return [];
-    used.add(match.id);
-    return [{ ...match, displayName, name: displayName, room: roomValue }];
+    return [];
   });
 }
 
@@ -773,6 +917,10 @@ function pricePreviewKey(date: string | null | undefined, movers: MoverCount) {
   return `${date ?? "flexible"}::${movers}`;
 }
 
+function failedPreviewDateRecord(dates: readonly string[]): Record<string, true> {
+  return Object.fromEntries(dates.map((date) => [date, true as const]));
+}
+
 function pricePreviewsForMover(
   pricePreviews: Record<string, QuotePricePreview>,
   movers: MoverCount
@@ -812,6 +960,40 @@ function priceToneForTotal(totalPence: number | null | undefined, comparisonPric
   if (position <= 0.34) return "cheap";
   if (position <= 0.67) return "medium";
   return "expensive";
+}
+
+function pricingClassificationForScope(
+  moveType: string,
+  moveSize: MoveSizeValue,
+  hasCustomInventory: boolean
+) {
+  if (hasCustomInventory || moveSize === "custom-inventory") return "UNSUPPORTED";
+  if (moveType === "office-move") return "BUSINESS_REMOVAL";
+  if (moveType === "student-move") return "STUDENT_MOVE";
+  if (moveType === "marketplace-collection") return "MAN_AND_VAN";
+  if (
+    moveType === "single-item-delivery" ||
+    moveType === "furniture-delivery" ||
+    moveType === "piano-move" ||
+    moveSize === "single-item" ||
+    moveSize === "few-items"
+  ) {
+    return "INDIVIDUAL_ITEMS";
+  }
+  if (
+    (moveType === "house-move" || moveType === "flat-move") &&
+    (
+      moveSize === "studio" ||
+      moveSize === "1-bedroom" ||
+      moveSize === "2-bedrooms" ||
+      moveSize === "3-bedrooms" ||
+      moveSize === "4-bedrooms" ||
+      moveSize === "5-plus-bedrooms"
+    )
+  ) {
+    return "FULL_HOUSE";
+  }
+  return "UNSUPPORTED";
 }
 
 function isLocalBookingHost() {
@@ -877,10 +1059,6 @@ function normaliseUkPhone(value: string) {
 function isValidUkPhone(value: string) {
   const phone = normaliseUkPhone(value);
   return /^(\+44\d{10}|0\d{10})$/i.test(phone);
-}
-
-function formatEstimatedInventoryVolume(selectedUnits: number) {
-  return `${(Math.max(0, selectedUnits) * CLIENT_ESTIMATED_VOLUME_PER_ITEM_M3).toFixed(2)} m³`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2143,7 +2321,7 @@ function InventorySidebar({
   const routeDuration = formatRouteDuration(routeDetails.durationMinutes);
   const routeLabel = `${routeLocationLabel(collection.address, "Collection")} to ${routeLocationLabel(delivery.address, "Delivery")}`;
   const propertyLabel = `${formatRoomPropertyType(collection.propertyType)} to ${formatRoomPropertyType(delivery.propertyType)}`;
-  const approxVolume = formatEstimatedInventoryVolume(selectedUnits);
+  const inventoryCountLabel = `${selectedUnits} item${selectedUnits === 1 ? "" : "s"}`;
   const routeMeta = routeMiles
     ? `${routeMiles}${routeDuration ? `, ${routeDuration}` : routeDetails.loading ? ", calculating time..." : ", estimated time calculated at checkout"}`
     : routeDetails.loading ? "Calculating route..." : "Estimated distance calculated at checkout";
@@ -2184,7 +2362,7 @@ function InventorySidebar({
                 <SummaryEditButton label="Edit inventory" onClick={onEditInventory} icon="basket" />
               </HStack>
               <HStack mt={2} gap={2} color={bookingTheme.muted} fontSize="xs">
-                <Text>{approxVolume}</Text>
+              <Text>{inventoryCountLabel}</Text>
                 <Text>/</Text>
                 <Text>Copy inventory</Text>
                 <FiCopy size={14} />
@@ -2325,6 +2503,8 @@ function CrewOption({
   pricePence,
   priceTone,
   loading,
+  unavailable = false,
+  unavailableLabel = "Unavailable",
   selected,
   onClick,
 }: {
@@ -2332,6 +2512,8 @@ function CrewOption({
   pricePence?: number | null;
   priceTone?: PriceTone | null;
   loading?: boolean;
+  unavailable?: boolean;
+  unavailableLabel?: string;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -2342,7 +2524,11 @@ function CrewOption({
   return (
     <Box
       as="button"
-      onClick={onClick}
+      onClick={() => {
+        if (!unavailable) onClick();
+      }}
+      aria-disabled={unavailable ? "true" : undefined}
+      tabIndex={unavailable ? -1 : undefined}
       h={{ base: "74px", md: "58px" }}
       px={{ base: 2.5, md: 4 }}
       borderRight={`1px solid ${bookingTheme.borderStrong}`}
@@ -2356,8 +2542,9 @@ function CrewOption({
       rowGap={1}
       textAlign="left"
       color={selected ? bookingTheme.ink : bookingTheme.muted}
-      cursor="pointer"
-      _hover={{ bg: "#FFFFFF" }}
+      opacity={unavailable ? 0.62 : 1}
+      cursor={unavailable ? "not-allowed" : "pointer"}
+      _hover={unavailable ? {} : { bg: "#FFFFFF" }}
       _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "-2px" }}
     >
       <HStack gap={2} minW={0}>
@@ -2376,9 +2563,9 @@ function CrewOption({
           fontWeight={900}
           color={priceToneMeta?.color}
         >
-          {typeof pricePence === "number" ? formatPence(pricePence) : loading ? "Checking" : "Quote"}
+          {unavailable ? unavailableLabel : typeof pricePence === "number" ? formatPence(pricePence) : loading ? "Checking" : "Quote"}
         </Text>
-        {loading && !hasPrice && <PriceLoadingDots color={bookingTheme.heroBlue} />}
+        {loading && !hasPrice && !unavailable && <PriceLoadingDots color={bookingTheme.heroBlue} />}
       </HStack>
     </Box>
   );
@@ -2398,6 +2585,7 @@ function PriceCalendar({
   selectedDate,
   anchorDate,
   pricePreviews,
+  failedDates,
   loading,
   previewError,
   onPrevious,
@@ -2407,6 +2595,7 @@ function PriceCalendar({
   selectedDate: string;
   anchorDate: Date;
   pricePreviews: Record<string, QuotePricePreview>;
+  failedDates?: Record<string, true>;
   loading: boolean;
   previewError?: string;
   onPrevious: () => void;
@@ -2493,6 +2682,7 @@ function PriceCalendar({
             const priceTone = priceToneForTotal(preview?.totalPence, comparisonPrices);
             const priceToneMeta = priceTone ? PRICE_TONE_META[priceTone] : null;
             const hasPrice = typeof preview?.totalPence === "number";
+            const hasFailedPreview = Boolean(failedDates?.[day.iso]);
             return (
               <Box
                 key={day.iso}
@@ -2541,9 +2731,9 @@ function PriceCalendar({
                         ? formatPence(preview.totalPence)
                       : loading
                         ? <PriceLoadingDots color={selected ? bookingTheme.heroBlue : bookingTheme.muted} />
-                        : preview?.status === "MANUAL_REVIEW"
-                          ? "Review"
-                          : previewError
+                      : preview?.status === "MANUAL_REVIEW"
+                        ? "Review"
+                          : previewError && hasFailedPreview
                             ? "Retry"
                             : "..."}
                   </Text>
@@ -2573,7 +2763,7 @@ function PriceCalculationPanel({
   const [phase, setPhase] = useState(0);
   const stages = useMemo(() => [
     { label: "Checking live route distance", value: "Route" },
-    { label: "Matching the right van and crew", value: "Crew" },
+    { label: "Checking inventory demand and crew", value: "Crew" },
     { label: "Reading your inventory weight", value: `${selectedUnits} items` },
     { label: "Applying date availability", value: "Calendar" },
     { label: "Preparing your best price", value: "Best value" },
@@ -2691,6 +2881,7 @@ function PriceOptionsSidebar({
   assemblyCount = 0,
   totalPence,
   priceTone,
+  benchmarkSavingPercent,
   totalLoading = false,
   coverageMode = "standard",
   protectionSelected = false,
@@ -2711,6 +2902,7 @@ function PriceOptionsSidebar({
   assemblyCount?: number;
   totalPence?: number;
   priceTone?: PriceTone | null;
+  benchmarkSavingPercent?: number | null;
   totalLoading?: boolean;
   coverageMode?: "standard" | "checkout";
   protectionSelected?: boolean;
@@ -2726,7 +2918,7 @@ function PriceOptionsSidebar({
   const routeDuration = formatRouteDuration(routeDetails.durationMinutes);
   const routeLabel = `${routeLocationLabel(collection.address, "Collection")} to ${routeLocationLabel(delivery.address, "Delivery")}`;
   const propertyLabel = `${formatRoomPropertyType(collection.propertyType)} to ${formatRoomPropertyType(delivery.propertyType)}`;
-  const approxVolume = formatEstimatedInventoryVolume(selectedUnits);
+  const inventoryCountLabel = `${selectedUnits} item${selectedUnits === 1 ? "" : "s"}`;
   const priceToneMeta = priceTone ? PRICE_TONE_META[priceTone] : null;
   const hasTotalPrice = typeof totalPence === "number";
   const addOnSummaries = services
@@ -2765,7 +2957,7 @@ function PriceOptionsSidebar({
               <SummaryEditButton label="Edit inventory" onClick={onEditInventory} icon="basket" />
             </HStack>
             <HStack mt={2} gap={2} color={bookingTheme.muted} fontSize="xs">
-              <Text>{approxVolume}</Text>
+              <Text>{inventoryCountLabel}</Text>
               <Text>/</Text>
               <Text>Copy inventory</Text>
               <FiCopy size={14} />
@@ -2915,10 +3107,10 @@ function PriceOptionsSidebar({
               {totalLoading && typeof totalPence !== "number" && <PriceLoadingDots color={bookingTheme.heroBlue} />}
             </HStack>
           )}
-          {coverageMode === "standard" && (
+          {coverageMode === "standard" && typeof benchmarkSavingPercent === "number" && benchmarkSavingPercent > 0 && (
             <HStack mt={4} p={3} borderRadius="md" border="1px solid #B9E7CF" bg="#F0FFF7" color="#16805A" justify="center">
               <FiCreditCard />
-              <Text fontSize="sm" fontWeight={900}>42% saving vs other companies</Text>
+              <Text fontSize="sm" fontWeight={900}>{benchmarkSavingPercent}% saving vs other companies</Text>
             </HStack>
           )}
         </Box>
@@ -3097,6 +3289,7 @@ function PriceOptionsStep({
   displayQuoteReference,
   calendarAnchor,
   pricePreviews,
+  failedPreviewDates,
   pricePreviewLoading,
   pricePreviewError,
   services,
@@ -3124,6 +3317,7 @@ function PriceOptionsStep({
   displayQuoteReference: string;
   calendarAnchor: Date;
   pricePreviews: Record<string, QuotePricePreview>;
+  failedPreviewDates: Record<string, true>;
   pricePreviewLoading: boolean;
   pricePreviewError: string;
   services: BookingServiceState;
@@ -3154,7 +3348,12 @@ function PriceOptionsStep({
   );
   const onePersonPreview = representativePreview(onePersonPricePreviews, selectedDate);
   const twoPersonPreview = representativePreview(twoPersonPricePreviews, selectedDate);
-  const selectedPreviewTotal = selectedMoverPricePreviews[selectedDate]?.totalPence ?? null;
+  const selectedPreview = selectedMoverPricePreviews[selectedDate];
+  const selectedCrewInvalid = Boolean(
+    selectedPreview &&
+    (selectedPreview.requiredCrew ?? selectedPreview.crew?.movers ?? selectedMoverCount) > selectedMoverCount
+  );
+  const selectedPreviewTotal = selectedCrewInvalid ? null : selectedPreview?.totalPence ?? null;
   const comparisonPrices = useMemo(() => getFixedPreviewPrices(selectedMoverPricePreviews), [selectedMoverPricePreviews]);
   const crewComparisonPrices = useMemo(
     () => getFixedPreviewPrices({
@@ -3164,12 +3363,25 @@ function PriceOptionsStep({
     [onePersonPreview, twoPersonPreview]
   );
   const selectedPriceTone = priceToneForTotal(selectedPreviewTotal, comparisonPrices);
+  const selectedBenchmarkSavingPercent =
+    selectedPreview?.savingPercent ??
+    canonicalBenchmarkSavingPercent(selectedPreview);
   const onePersonTone = priceToneForTotal(onePersonPreview?.totalPence, crewComparisonPrices);
   const twoPersonTone = priceToneForTotal(twoPersonPreview?.totalPence, crewComparisonPrices);
   const hasPreviewPrices = fixedPreviewValues(pricePreviews).length > 0;
   const addOnSummaries = selectedAddonSummaries(services, moveSize, selectedUnits, dismantleCount, assemblyCount);
   const addOnTotalPence = addOnSummaries.reduce((sum, addon) => sum + addon.amountPence, 0);
   const canContinue = typeof selectedPreviewTotal === "number" && !pricePreviewLoading;
+  const selectedRequiredCrew = selectedPreview?.requiredCrew ?? selectedPreview?.crew?.movers ?? null;
+  const continueLabel = canContinue
+    ? "Next Step"
+    : pricePreviewLoading
+      ? "Calculating..."
+      : selectedCrewInvalid && typeof selectedRequiredCrew === "number"
+        ? `${selectedRequiredCrew} movers required`
+        : pricePreviewError
+          ? "Retry prices"
+          : "Select a date";
 
   const handleDateSelect = (date: string) => {
     const preview = selectedMoverPricePreviews[date];
@@ -3230,6 +3442,8 @@ function PriceOptionsStep({
                   pricePence={onePersonPreview?.totalPence}
                   priceTone={onePersonTone}
                   loading={pricePreviewLoading}
+                  unavailable={(onePersonPreview?.requiredCrew ?? onePersonPreview?.crew?.movers ?? 1) > 1}
+                  unavailableLabel="2 required"
                   selected={selectedMoverCount === 1}
                   onClick={() => onMoverChange(1)}
                 />
@@ -3238,6 +3452,7 @@ function PriceOptionsStep({
                   pricePence={twoPersonPreview?.totalPence}
                   priceTone={twoPersonTone}
                   loading={pricePreviewLoading}
+                  unavailable={false}
                   selected={selectedMoverCount === 2}
                   onClick={() => onMoverChange(2)}
                 />
@@ -3280,6 +3495,7 @@ function PriceOptionsStep({
                 selectedDate={selectedDate}
                 anchorDate={calendarAnchor}
                 pricePreviews={selectedMoverPricePreviews}
+                failedDates={failedPreviewDates}
                 loading={pricePreviewLoading}
                 previewError={pricePreviewError}
                 onPrevious={onCalendarPrevious}
@@ -3329,7 +3545,7 @@ function PriceOptionsStep({
                 cursor={canContinue ? "pointer" : "not-allowed"}
                 _hover={canContinue ? { bg: "#2563EB" } : {}}
               >
-                {canContinue ? "Next Step" : "Calculating..."}
+                {continueLabel}
               </Box>
             </HStack>
           </Box>
@@ -3355,6 +3571,7 @@ function PriceOptionsStep({
               assemblyCount={assemblyCount}
               totalPence={typeof selectedPreviewTotal === "number" ? selectedPreviewTotal : undefined}
               priceTone={selectedPriceTone}
+              benchmarkSavingPercent={selectedBenchmarkSavingPercent}
               totalLoading={pricePreviewLoading}
               onEditRoute={onEditRoute}
               onEditInventory={onEditInventory}
@@ -4487,9 +4704,12 @@ export function InstantQuotePage() {
   const [pricePreviews, setPricePreviews] = useState<Record<string, QuotePricePreview>>({});
   const [pricePreviewLoading, setPricePreviewLoading] = useState(false);
   const [pricePreviewError, setPricePreviewError] = useState("");
+  const [failedPreviewDates, setFailedPreviewDatesState] = useState<Record<string, true>>({});
   const [pricePreviewRetryKey, setPricePreviewRetryKey] = useState(0);
   const [pricePreviewInvalidationKey, setPricePreviewInvalidationKey] = useState(0);
+  const failedPreviewDatesRef = useRef<Record<string, true>>({});
   const pricePreviewRequestRef = useRef(0);
+  const pricePreviewAbortControllerRef = useRef<AbortController | null>(null);
   const quoteRequestRef = useRef(0);
   const quoteSubmitKeyRef = useRef<{ stateKey: string; idempotencyKey: string } | null>(null);
   const [bookingRef, setBookingRef] = useState("");
@@ -4499,6 +4719,16 @@ export function InstantQuotePage() {
   const [pendingDraft, setPendingDraft] = useState<Record<string, unknown> | null>(null);
   const [showExistingQuotePrompt, setShowExistingQuotePrompt] = useState(false);
   const [draftNotice, setDraftNotice] = useState("");
+
+  const setFailedPreviewDates = useCallback((
+    nextOrUpdater: Record<string, true> | ((previous: Record<string, true>) => Record<string, true>)
+  ) => {
+    setFailedPreviewDatesState((previous) => {
+      const next = typeof nextOrUpdater === "function" ? nextOrUpdater(previous) : nextOrUpdater;
+      failedPreviewDatesRef.current = next;
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -4735,32 +4965,88 @@ export function InstantQuotePage() {
     customItems
       .filter((item) => item.room === activeRoom)
       .reduce((sum, item) => sum + item.quantity, 0);
-  const pricePreviewScopeKey = useMemo(() => JSON.stringify({
+
+  const selectedInventoryPayload = useMemo(() => (
+    items
+      .filter((item) => item.quantity > 0 && item.itemId.trim())
+      .flatMap((item) => {
+        const itemId = resolveInventoryPayloadItemId(categories, item);
+        if (!itemId) return [];
+        return [{
+          itemId,
+          quantity: Math.max(1, Math.min(99, Math.floor(item.quantity))),
+          room: item.room,
+        }];
+      })
+  ), [categories, items]);
+
+  const selectedCustomItemPayload = useMemo(() => (
+    customItems
+      .filter((item) => item.quantity > 0 && item.name.trim().length >= 2)
+      .map((item) => ({
+        name: item.name.trim(),
+        quantity: Math.max(1, Math.min(25, Math.floor(item.quantity))),
+        room: item.room,
+        notes: item.notes.trim(),
+      }))
+  ), [customItems]);
+
+  const inventorySignature = useMemo(
+    () => canonicalPreviewInventorySignature(selectedInventoryPayload),
+    [selectedInventoryPayload]
+  );
+  const customInventorySignature = useMemo(
+    () => stablePreviewStringify(selectedCustomItemPayload.map((item) => ({
+      name: item.name,
+      notes: item.notes,
+      quantity: item.quantity,
+      room: item.room,
+    }))),
+    [selectedCustomItemPayload]
+  );
+  const scopePricingClassification = pricingClassificationForScope(
     moveType,
     moveSize,
-    collection,
-    delivery,
-    hasAdditionalStop,
-    additionalStop,
-    arrivalWindow,
-    flexibleDate,
-    flexibleTime,
-    exactTime,
-    earliestDate,
-    latestDate,
-    dismantleCount,
-    assemblyCount,
-    urgent,
-    items,
-    customItems,
-    services,
-    promotionCode,
+    selectedCustomItemPayload.length > 0
+  );
+  const serviceRecord = services as Record<string, unknown>;
+  const pricePreviewScopeKey = useMemo(() => buildPricePreviewScopeKey({
+    inventory: selectedInventoryPayload,
+    customInventory: selectedCustomItemPayload,
+    moveType,
+    propertySize: moveSize,
+    pricingClassification: scopePricingClassification,
+    packingIncluded: Boolean(services.packing),
+    serviceLevel: typeof serviceRecord.serviceLevel === "string" ? serviceRecord.serviceLevel : "standard",
+    crew: selectedMoverCount,
+    pickup: collection,
+    destination: delivery,
+    additionalStop: hasAdditionalStop ? additionalStop : null,
+    routeIdentity: `${collection.address?.lng ?? ""},${collection.address?.lat ?? ""}>${delivery.address?.lng ?? ""},${delivery.address?.lat ?? ""}`,
+    distanceMiles: null,
+    referenceProfileId: null,
+    referenceProfileVersion: null,
+    extras: {
+      sourceChannel: "PUBLIC_SELF_BOOKING",
+      hasAdditionalStop,
+      arrivalWindow,
+      flexibleDate,
+      flexibleTime,
+      exactTime,
+      earliestDate,
+      latestDate,
+      dismantleCount,
+      assemblyCount,
+      urgent,
+      services,
+      promotionCode,
+    },
   }), [
     additionalStop,
     arrivalWindow,
     assemblyCount,
     collection,
-    customItems,
+    selectedCustomItemPayload,
     delivery,
     dismantleCount,
     earliestDate,
@@ -4768,15 +5054,19 @@ export function InstantQuotePage() {
     flexibleDate,
     flexibleTime,
     hasAdditionalStop,
-    items,
     latestDate,
     moveSize,
     moveType,
     promotionCode,
+    scopePricingClassification,
+    selectedInventoryPayload,
+    selectedMoverCount,
+    serviceRecord.serviceLevel,
     services,
     urgent,
   ]);
-  const pricingStateKey = useMemo(() => JSON.stringify({
+  const pricingStateKey = useMemo(() => stablePreviewStringify({
+    sourceChannel: "PUBLIC_SELF_BOOKING",
     moveType,
     moveSize,
     collection,
@@ -4795,8 +5085,10 @@ export function InstantQuotePage() {
     assemblyCount,
     sameDay,
     urgent,
-    items,
-    customItems,
+    inventorySignature,
+    customInventorySignature,
+    inventory: selectedInventoryPayload,
+    customItems: selectedCustomItemPayload,
     services,
     promotionCode,
     customerEmail: customer.email,
@@ -4806,7 +5098,7 @@ export function InstantQuotePage() {
     arrivalWindow,
     assemblyCount,
     collection,
-    customItems,
+    customInventorySignature,
     customer.email,
     customer.phone,
     delivery,
@@ -4816,7 +5108,7 @@ export function InstantQuotePage() {
     flexibleDate,
     flexibleTime,
     hasAdditionalStop,
-    items,
+    inventorySignature,
     latestDate,
     moveDate,
     moveSize,
@@ -4824,6 +5116,8 @@ export function InstantQuotePage() {
     promotionCode,
     sameDay,
     selectedMoverCount,
+    selectedCustomItemPayload,
+    selectedInventoryPayload,
     services,
     urgent,
   ]);
@@ -4834,28 +5128,34 @@ export function InstantQuotePage() {
     previousPricingStateKeyRef.current = pricingStateKey;
     quoteRequestRef.current += 1;
     pricePreviewRequestRef.current += 1;
+    pricePreviewAbortControllerRef.current?.abort();
+    pricePreviewAbortControllerRef.current = null;
     quoteSubmitKeyRef.current = null;
     setQuote(null);
     setQuoteLoading(false);
     setPaymentError("");
     setPricePreviews({});
+    setFailedPreviewDates({});
     setPricePreviewInvalidationKey((value) => value + 1);
     setPricePreviewLoading(step >= 2 && step <= 4);
     setPricePreviewError("");
-  }, [pricingStateKey, step]);
+  }, [pricingStateKey, setFailedPreviewDates, step]);
 
   const invalidatePricedResults = useCallback(() => {
     quoteRequestRef.current += 1;
     pricePreviewRequestRef.current += 1;
+    pricePreviewAbortControllerRef.current?.abort();
+    pricePreviewAbortControllerRef.current = null;
     quoteSubmitKeyRef.current = null;
     setQuote(null);
     setQuoteLoading(false);
     setPaymentError("");
     setPricePreviews({});
+    setFailedPreviewDates({});
     setPricePreviewInvalidationKey((value) => value + 1);
     setPricePreviewLoading(step >= 2 && step <= 4);
     setPricePreviewError("");
-  }, [step]);
+  }, [setFailedPreviewDates, step]);
 
   const updateCollection = useCallback((value: AccessDraft) => {
     invalidatePricedResults();
@@ -4867,17 +5167,18 @@ export function InstantQuotePage() {
     setDelivery(value);
   }, [invalidatePricedResults]);
 
-  const setItemQuantity = (item: ApiItem, delta: number, room: RoomValue = activeRoom) => {
+  const setItemQuantity = (item: InventoryListItem, delta: number, room: RoomValue = activeRoom) => {
+    const itemId = item.pricingItemId;
     invalidatePricedResults();
     setItems((prev) => {
-      const existing = prev.find((line) => line.itemId === item.id && line.room === room);
+      const existing = prev.find((line) => line.itemId === itemId && line.room === room);
       if (!existing && delta <= 0) return prev;
       if (!existing) {
-        return [...prev, { itemId: item.id, name: item.name, imagePath: item.imagePath, quantity: 1, room }];
+        return [...prev, { itemId, name: item.name, imagePath: item.imagePath, quantity: 1, room }];
       }
       const quantity = Math.max(0, Math.min(99, existing.quantity + delta));
-      if (quantity === 0) return prev.filter((line) => !(line.itemId === item.id && line.room === room));
-      return prev.map((line) => line.itemId === item.id && line.room === room ? { ...line, quantity } : line);
+      if (quantity === 0) return prev.filter((line) => !(line.itemId === itemId && line.room === room));
+      return prev.map((line) => line.itemId === itemId && line.room === room ? { ...line, quantity } : line);
     });
   };
 
@@ -4951,7 +5252,9 @@ export function InstantQuotePage() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const accessPayload = (draft: AccessDraft) => {
+  const minDate = new Date().toISOString().split("T")[0] ?? "";
+
+  const accessPayload = useCallback((draft: AccessDraft) => {
     if (!draft.address) throw new Error("Address missing");
     return {
       fullAddress: draft.address.fullAddress ?? "",
@@ -4974,18 +5277,18 @@ export function InstantQuotePage() {
       accessRestrictions: draft.accessRestrictions,
       notes: draft.notes,
     };
-  };
+  }, []);
 
-  const selectedServicesPayload = () => ({
+  const selectedServicesPayload = useCallback(() => ({
     ...services,
     additionalMover: services.additionalMover,
     dismantling: dismantleCount > 0,
     reassembly: assemblyCount > 0,
     dismantlingItems: dismantleCount,
     reassemblyItems: assemblyCount,
-  });
+  }), [assemblyCount, dismantleCount, services]);
 
-  const quoteCustomerPayload = (
+  const quoteCustomerPayload = useCallback((
     override?: Partial<CustomerDraft>,
     options: { allowPreviewFallback?: boolean } = {}
   ) => {
@@ -5005,9 +5308,9 @@ export function InstantQuotePage() {
       bookingConsentAccepted: true,
       termsAccepted: true,
     };
-  };
+  }, [customer]);
 
-  const buildQuotePayload = ({
+  const buildQuotePayload = useCallback(({
     moveDateOverride = moveDate,
     preferredMoversOverride,
     idempotencyKey,
@@ -5044,25 +5347,38 @@ export function InstantQuotePage() {
       sameDay: Boolean(moveDateForPayload && moveDateForPayload === minDate),
       urgent,
       preferredMovers: preferredMoversOverride ?? selectedMoverCount,
-      inventory: items.filter((item) => item.quantity > 0 && item.itemId.trim()).map((item) => ({
-        itemId: item.itemId,
-        quantity: Math.max(1, Math.min(99, Math.floor(item.quantity))),
-        room: item.room,
-      })),
-      customItems: customItems
-        .filter((item) => item.quantity > 0 && item.name.trim().length >= 2)
-        .map((item) => ({
-          name: item.name.trim(),
-          quantity: Math.max(1, Math.min(25, Math.floor(item.quantity))),
-          room: item.room,
-          notes: item.notes.trim(),
-        })),
+      inventory: selectedInventoryPayload.map((item) => ({ ...item })),
+      customItems: selectedCustomItemPayload.map((item) => ({ ...item })),
       services: selectedServicesPayload(),
       customer: quoteCustomerPayload(customerOverride, { allowPreviewFallback: !includeContactNotes }),
       promotionCode: promotionCode.trim() || undefined,
-      sourceChannel: "web",
+      sourceChannel: "PUBLIC_SELF_BOOKING",
     };
-  };
+  }, [
+    accessPayload,
+    additionalStop,
+    arrivalWindow,
+    clientQuoteReference,
+    collection,
+    delivery,
+    earliestDate,
+    exactTime,
+    flexibleDate,
+    flexibleTime,
+    hasAdditionalStop,
+    latestDate,
+    minDate,
+    moveDate,
+    moveSize,
+    moveType,
+    promotionCode,
+    quoteCustomerPayload,
+    selectedCustomItemPayload,
+    selectedInventoryPayload,
+    selectedMoverCount,
+    selectedServicesPayload,
+    urgent,
+  ]);
 
   const startStripeCheckout = async (quoteReference: string) => {
     setPaymentRedirecting(true);
@@ -5108,17 +5424,21 @@ export function InstantQuotePage() {
       reference: `LOCAL-${Date.now().toString(36).toUpperCase()}`,
       status: "FIXED",
       pricingVersion: null,
+      pricingAlgorithmVersion: preview.pricingAlgorithmVersion ?? null,
+      competitorBenchmarkId: preview.competitorBenchmarkId ?? null,
+      serverInputHash: preview.serverInputHash ?? null,
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       totalPence: preview.totalPence,
       originalTotalPence: preview.originalTotalPence ?? preview.totalPence,
       discountTotalPence: preview.discountTotalPence ?? 0,
       promotionLabel: preview.promotionLabel ?? null,
+      explanation: preview.explanation ?? null,
       routeMileage: preview.routeMileage ?? null,
       estimatedDurationMinutes: preview.estimatedDurationMinutes ?? preview.crew?.totalJobMinutes ?? null,
       vehicle: preview.vehicle ?? {
-        name: selectedUnits >= 35 ? "Luton van" : "Transit van",
-        multipleVehiclesRequired: selectedUnits >= 75,
-        multipleTripsLikely: selectedUnits >= 65,
+        name: null,
+        multipleVehiclesRequired: false,
+        multipleTripsLikely: false,
       },
       crew: preview.crew ?? {
         movers,
@@ -5128,8 +5448,8 @@ export function InstantQuotePage() {
         totalJobMinutes: 0,
       },
       inventory: preview.inventory ?? {
-        totalVolumeM3: Math.round(selectedUnits * CLIENT_ESTIMATED_VOLUME_PER_ITEM_M3 * 100) / 100,
-        totalWeightKg: selectedUnits * 18,
+        totalVolumeM3: 0,
+        totalWeightKg: 0,
         itemUnits: selectedUnits,
         fragileItemCount: 0,
         heavyOrSpecialItemCount: 0,
@@ -5234,7 +5554,6 @@ export function InstantQuotePage() {
     }
   };
 
-  const minDate = new Date().toISOString().split("T")[0] ?? "";
   const calendarPreviewDates = useMemo(
     () => makePriceCalendarDays(calendarAnchor).filter((day) => !day.isPast).map((day) => day.iso),
     [calendarAnchor]
@@ -5264,12 +5583,27 @@ export function InstantQuotePage() {
   const selectedServerPreview =
     scopedPricePreviews[pricePreviewKey(moveDate, selectedMoverCount)] ??
     (moveDate ? selectedMoverServerPreviews[moveDate] : undefined);
+  const selectedServerCrewInvalid = Boolean(
+    selectedServerPreview &&
+    (selectedServerPreview.requiredCrew ?? selectedServerPreview.crew?.movers ?? selectedMoverCount) > selectedMoverCount
+  );
   const selectedServerTotalPence =
-    selectedServerPreview?.status === "FIXED" && typeof selectedServerPreview.totalPence === "number"
+    !selectedServerCrewInvalid &&
+    selectedServerPreview?.status === "FIXED" &&
+    typeof selectedServerPreview.totalPence === "number"
       ? selectedServerPreview.totalPence
       : undefined;
   const serverComparisonPrices = useMemo(() => getFixedPreviewPrices(scopedPricePreviews), [scopedPricePreviews]);
   const selectedServerPriceTone = priceToneForTotal(selectedServerTotalPence, serverComparisonPrices);
+
+  useEffect(() => {
+    if (step < 2 || step > 4 || selectedServerPreview?.status !== "FIXED") return;
+    const requiredCrew = selectedServerPreview.requiredCrew ?? selectedServerPreview.crew?.movers ?? null;
+    if ((requiredCrew === 1 || requiredCrew === 2) && requiredCrew > selectedMoverCount) {
+      setSelectedMoverCount(requiredCrew);
+    }
+  }, [selectedMoverCount, selectedServerPreview, step]);
+
   const displayQuoteReference = isQuoteReference(quote?.reference)
     ? quote.reference
     : clientQuoteReference;
@@ -5341,13 +5675,18 @@ export function InstantQuotePage() {
 
     if (!canPreview) {
       pricePreviewRequestRef.current += 1;
+      pricePreviewAbortControllerRef.current?.abort();
+      pricePreviewAbortControllerRef.current = null;
       setPricePreviews({});
+      setFailedPreviewDates({});
       setPricePreviewLoading(false);
       setPricePreviewError("");
       return;
     }
 
     const controller = new AbortController();
+    pricePreviewAbortControllerRef.current?.abort();
+    pricePreviewAbortControllerRef.current = controller;
     const requestId = pricePreviewRequestRef.current + 1;
     const requestPricingScopeKey = pricePreviewScopeKey;
     pricePreviewRequestRef.current = requestId;
@@ -5360,61 +5699,111 @@ export function InstantQuotePage() {
       controller.abort();
       if (active && requestId === pricePreviewRequestRef.current) {
         setPricePreviewLoading(false);
-        setPricePreviewError("Prices are taking longer than expected. Please try again.");
+        setPricePreviewError("Unable to load prices. Please retry.");
+        setFailedPreviewDates(failedPreviewDateRecord(previewRequestDates));
       }
     }, PRICE_PREVIEW_CLIENT_TIMEOUT_MS);
     const timeout = window.setTimeout(() => {
       void (async () => {
       try {
-        const response = await fetch("/api/quotes/preview", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            quotes: previewRequestDates.flatMap((date) => previewRequestMovers.map((movers) => buildQuotePayload({
+        const failedDatesForRetry = Object.keys(failedPreviewDatesRef.current)
+          .filter((date) => previewRequestDates.includes(date));
+        const datesToRequest = failedDatesForRetry.length > 0 ? failedDatesForRetry : previewRequestDates;
+        const chunks = buildPricePreviewChunks(datesToRequest, previewRequestMovers, (date, movers) => buildQuotePayload({
               moveDateOverride: date,
-              preferredMoversOverride: movers,
+              preferredMoversOverride: movers as MoverCount,
               includeContactNotes: false,
               customerOverride: {
                 fullName: customer.fullName || "Price Preview",
                 email: isValidEmail(customer.email) ? customer.email : "preview@example.com",
                 phone: customer.phone || "07123456789",
               },
-            }))),
-          }),
-        });
-        const data = await response.json().catch(() => null) as { previews?: QuotePricePreview[]; error?: string; issues?: string[] } | null;
-        if (!response.ok || !data?.previews) {
-          throw new Error(data?.issues?.[0] ?? data?.error ?? "Prices could not load.");
+        }));
+        if (chunks.length === 0) {
+          setPricePreviewLoading(false);
+          return;
         }
+
+        const settled = await Promise.allSettled(chunks.map(async (chunk) => {
+          const response = await fetch("/api/quotes/preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: controller.signal,
+            body: JSON.stringify({ quotes: chunk.quotes }),
+          });
+          const data = await response.json().catch(() => null) as {
+            previews?: QuotePricePreview[];
+            error?: string;
+            code?: string;
+            issues?: Array<{ code?: string; path?: string }>;
+          } | null;
+          if (!response.ok || !data?.previews) {
+            throw new Error(data?.error ?? "Unable to load prices. Please retry.");
+          }
+          return { chunk, previews: data.previews };
+        }));
+
         if (
           !active ||
           controller.signal.aborted ||
           !shouldAcceptPricePreviewResponse({
             responseRequestId: requestId,
             activeRequestId: pricePreviewRequestRef.current,
+            requestAborted: controller.signal.aborted,
             responsePricingScopeKey: requestPricingScopeKey,
             activePricingScopeKey: pricePreviewScopeKey,
           })
         ) {
           return;
         }
-        setPricePreviews(Object.fromEntries(
-          attachPricePreviewScope(data.previews, requestPricingScopeKey)
-            .map((preview) => [preview.key, preview])
-        ));
-        setPricePreviewError("");
+        const successfulPreviews: QuotePricePreview[] = [];
+        const successfulDates = new Set<string>();
+        const failedDates = new Set<string>();
+        settled.forEach((result, index) => {
+          const chunk = chunks[index];
+          if (!chunk) return;
+          if (result.status === "fulfilled") {
+            successfulPreviews.push(...result.value.previews);
+            chunk.dates.forEach((date) => successfulDates.add(date));
+          } else {
+            chunk.dates.forEach((date) => failedDates.add(date));
+          }
+        });
+        if (successfulPreviews.length > 0) {
+          setPricePreviews((previous) => mergePricePreviewRecords(
+            previous,
+            successfulPreviews,
+            requestPricingScopeKey
+          ));
+        }
+        setFailedPreviewDates((previous) => {
+          const next = Object.fromEntries(
+            Object.entries(previous).filter(([date]) => (
+              previewRequestDates.includes(date) && !successfulDates.has(date)
+            ))
+          ) as Record<string, true>;
+          failedDates.forEach((date) => {
+            next[date] = true;
+          });
+          return next;
+        });
+        setPricePreviewError(failedDates.size > 0 ? "Unable to load prices. Please retry." : "");
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === "AbortError") {
           if (requestTimedOut && active && requestId === pricePreviewRequestRef.current) {
-            setPricePreviewError("Prices are taking longer than expected. Please try again.");
+            setPricePreviewError("Unable to load prices. Please retry.");
+            setFailedPreviewDates(failedPreviewDateRecord(previewRequestDates));
           }
           return;
         }
         if (!active || requestId !== pricePreviewRequestRef.current) return;
-        setPricePreviewError(caught instanceof Error ? caught.message : "Prices could not load.");
+        setPricePreviewError("Unable to load prices. Please retry.");
+        setFailedPreviewDates(failedPreviewDateRecord(previewRequestDates));
       } finally {
         window.clearTimeout(requestTimeout);
+        if (pricePreviewAbortControllerRef.current === controller) {
+          pricePreviewAbortControllerRef.current = null;
+        }
         if (active && requestId === pricePreviewRequestRef.current) {
           setPricePreviewLoading(false);
         }
@@ -5427,12 +5816,14 @@ export function InstantQuotePage() {
       window.clearTimeout(timeout);
       window.clearTimeout(requestTimeout);
       controller.abort();
+      if (pricePreviewAbortControllerRef.current === controller) {
+        pricePreviewAbortControllerRef.current = null;
+      }
     };
-    // buildQuotePayload reads the same state listed here; preview request arrays are represented by their keys.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     additionalStop,
     arrivalWindow,
+    buildQuotePayload,
     collection,
     customItems,
     customer.email,
@@ -5447,12 +5838,15 @@ export function InstantQuotePage() {
     items,
     moveSize,
     moveType,
+    previewRequestDates,
     previewRequestDatesKey,
+    previewRequestMovers,
     previewRequestMoversKey,
     pricePreviewInvalidationKey,
     pricePreviewScopeKey,
     pricePreviewRetryKey,
     promotionCode,
+    setFailedPreviewDates,
     selectedUnits,
     services,
     step,
@@ -5893,10 +6287,10 @@ export function InstantQuotePage() {
                       ) : (
                         <Box>
                           {visibleItems.map((item) => {
-                            const quantity = items.find((line) => line.itemId === item.id && line.room === activeRoom)?.quantity ?? 0;
+                            const quantity = items.find((line) => line.itemId === item.pricingItemId && line.room === activeRoom)?.quantity ?? 0;
                             return (
                               <InventoryItemRow
-                                key={`${activeRoom}-${item.id}-${item.displayName}`}
+                                key={`${activeRoom}-${item.pricingItemId}-${item.displayName}`}
                                 item={item}
                                 quantity={quantity}
                                 onAdd={() => setItemQuantity(item, 1, activeRoom)}
@@ -6016,13 +6410,18 @@ export function InstantQuotePage() {
                 displayQuoteReference={displayQuoteReference}
                 calendarAnchor={calendarAnchor}
                 pricePreviews={scopedPricePreviews}
+                failedPreviewDates={failedPreviewDates}
                 pricePreviewLoading={pricePreviewLoading}
                 pricePreviewError={pricePreviewError}
                 services={services}
                 dismantleCount={dismantleCount}
                 assemblyCount={assemblyCount}
                 onMoverChange={(value) => {
-                  invalidatePricedResults();
+                  quoteRequestRef.current += 1;
+                  quoteSubmitKeyRef.current = null;
+                  setQuote(null);
+                  setQuoteLoading(false);
+                  setPaymentError("");
                   setSelectedMoverCount(value);
                 }}
                 onCalendarPrevious={() => setCalendarAnchor((date) => addDays(date, -28))}
@@ -6178,9 +6577,9 @@ export function InstantQuotePage() {
                         onNext={completeLocalPreviewBooking}
                       />
                     )}
-                    <SimpleGrid columns={{ base: 1, md: 2, lg: 4 }} gap={3} w="full">
+                      <SimpleGrid columns={{ base: 1, md: 2, lg: 4 }} gap={3} w="full">
                       <SummaryCell label="Distance" value={quote.routeMileage == null ? "Review" : `${quote.routeMileage.toFixed(1)} miles`} />
-                      <SummaryCell label="Vehicle" value={quote.vehicle.name ?? "Review"} />
+                      <SummaryCell label="Inventory" value={`${quote.inventory.itemUnits} item${quote.inventory.itemUnits === 1 ? "" : "s"}`} />
                       <SummaryCell label="Crew" value={`${quote.crew.movers || 0} mover${quote.crew.movers === 1 ? "" : "s"}`} />
                       <SummaryCell label="Duration" value={quote.estimatedDurationMinutes == null ? "Review" : `${Math.round(quote.estimatedDurationMinutes / 60 * 10) / 10} hrs`} />
                     </SimpleGrid>
