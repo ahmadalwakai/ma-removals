@@ -110,7 +110,6 @@ export interface BookingFormState {
   customerEmail: string;
   customerPhone: string;
   specialInstructions: string;
-  priceIntentSecret: string | null;
 }
 
 export const INITIAL_BOOKING_STATE: BookingFormState = {
@@ -140,7 +139,6 @@ export const INITIAL_BOOKING_STATE: BookingFormState = {
   customerEmail: "",
   customerPhone: "",
   specialInstructions: "",
-  priceIntentSecret: null,
 };
 
 export const SERVICE_LABELS: Record<string, string> = {

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Box, Flex, Text, VStack, HStack } from "@chakra-ui/react";
 import { motion, AnimatePresence } from "framer-motion";
 import { colors } from "@/lib/tokens";
-import { formatPrice } from "@/lib/pricing";
+import { formatPrice } from "@/lib/money";
 import { PricingLoader, type LoaderStep } from "@/components/booking/PricingLoader";
 import type {
   BookingFormState,
@@ -207,52 +207,10 @@ export function DatePricingStep({ state, update, onNext, onBack }: DatePricingSt
     ];
   }, [state]);
 
-  // Call pricing API on first visit
   useEffect(() => {
     if (state.pricingResult) return;
-    const body = {
-      serviceType: state.service,
-      serviceVariant: state.serviceVariant || undefined,
-      distanceMiles: state.distanceMiles ?? 0,
-      pickupFloor: state.pickupFloor,
-      pickupHasLift: state.pickupHasLift,
-      dropoffFloor: state.dropoffFloor,
-      dropoffHasLift: state.dropoffHasLift,
-      helpersCount: state.helpersCount,
-      needsPacking: state.needsPacking,
-      needsAssembly: state.needsAssembly,
-      pickupLat: state.pickupAddress?.lat ?? 51.5,
-      pickupLng: state.pickupAddress?.lng ?? -0.1,
-      pickupPostcode: state.pickupAddress?.postcode ?? "",
-      pickupRegion: state.pickupAddress?.region ?? "",
-      pickupCountry: state.pickupAddress?.country ?? "",
-      pickupFullAddress: state.pickupAddress?.fullAddress ?? "",
-      moveDateFlexible: state.moveDateFlexible,
-      items: state.selectedItems.map((s) => ({
-        name: s.name,
-        quantity: s.quantity,
-        imagePath: s.imagePath,
-      })),
-    };
-    fetch("/api/pricing/calculate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })
-      .then((r) => r.json())
-      .then((json) => {
-        if (json.success) {
-          setApiResult(json.data as PricingResult);
-        } else {
-          setApiError(json.error ?? "Pricing unavailable. Please try again.");
-        }
-        setApiDone(true);
-      })
-      .catch(() => {
-        setApiError("Network error. Please check your connection.");
-        setApiDone(true);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setApiError("This move will be reviewed by the team.");
+    setApiDone(true);
   }, []);
 
   // Transition to calendar when BOTH loader animation AND API are done

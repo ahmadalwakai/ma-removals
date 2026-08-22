@@ -179,6 +179,11 @@ export const confirmBookingFromQuoteSchema = z.object({
   idempotencyKey: z.string().trim().min(8).max(120),
 });
 
+export const createQuoteCheckoutSessionSchema = z.object({
+  quoteReference: quoteReferenceSchema,
+  idempotencyKey: z.string().trim().min(8).max(120),
+}).strict();
+
 export const quoteEventSchema = z.object({
   reference: quoteReferenceSchema.optional(),
   type: z.string().trim().min(2).max(80),

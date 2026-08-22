@@ -6,7 +6,7 @@ import { motion } from "framer-motion";
 import { FiCheckCircle, FiNavigation, FiDownload, FiPhone } from "react-icons/fi";
 import { FaWhatsapp } from "react-icons/fa";
 import { colors } from "@/lib/tokens";
-import { formatPrice } from "@/lib/pricing";
+import { formatPrice } from "@/lib/money";
 import { trackPurchase } from "@/lib/analytics";
 import { SERVICE_LABELS, type BookingFormState } from "@/types/booking";
 import styles from "./ConfirmationStep.module.css";

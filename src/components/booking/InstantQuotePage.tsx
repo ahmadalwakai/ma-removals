@@ -1,8 +1,8 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Box, CloseButton, Drawer, Flex, HStack, Portal, SimpleGrid, Spinner, Text, VStack } from "@chakra-ui/react";
+import { Box, Button, CloseButton, Drawer, Flex, HStack, Portal, SimpleGrid, Spinner, Text, VStack } from "@chakra-ui/react";
 import {
   FiAlertTriangle,
   FiArrowLeft,
@@ -19,7 +19,6 @@ import {
   FiDroplet,
   FiEdit2,
   FiHome,
-  FiInfo,
   FiMapPin,
   FiMinusCircle,
   FiMonitor,
@@ -48,6 +47,7 @@ import {
 } from "@/lib/booking/quote-preview-cache";
 import { packingChargePenceForMove, type PackingMode } from "@/lib/packing";
 import { formatPence } from "@/lib/money";
+import { SITE } from "@/lib/constants";
 import type { AddressData } from "@/types/booking";
 
 type MapboxModule = typeof import("mapbox-gl");
@@ -131,277 +131,102 @@ const ROOMS = [
 
 type RoomValue = (typeof ROOMS)[number]["value"];
 
-const ROOM_ITEM_LABELS = {
+const ROOM_DISPLAY_ITEMS = {
   "bedroom": [
-    "Single Bed & Mattress",
-    "Double Bed & Mattress",
-    "Kingsize Bed & Mattress",
-    "Single Wardrobe",
-    "Double Wardrobe",
-    "Chest Of Drawers",
-    "Bedside Table",
-    "Dressing Table",
-    "Television",
-    "Side Table",
+    { label: "Single Bed & Mattress", itemId: "single-bed-frame-sussex-white" },
+    { label: "Double Bed & Mattress", itemId: "double-bed-frame-harper-storage-mattress" },
+    { label: "Kingsize Bed & Mattress", itemId: "king-bed-frame-classic-luxe-storage" },
+    { label: "Single Wardrobe", itemId: "wardrobe-single-door-personal-laminate-cabinet" },
+    { label: "Double Wardrobe", itemId: "mirrored-wardrobe-better-home-products-wood-double-sliding" },
+    { label: "Chest Of Drawers", itemId: "chest-drawers-mahogany" },
+    { label: "Bedside Table", itemId: "end-table-industrial-square-foluban" },
+    { label: "Dressing Table", itemId: "dresser-5drawer-changing-table" },
+    { label: "Television", itemId: "television-55inch-lg-oled-c4" },
+    { label: "Side Table", itemId: "side-table-round-2-tier-fantersi" },
   ],
   "living-room": [
-    "Two Seater Sofa",
-    "Three Seater Sofa",
-    "Armchair",
-    "Coffee Table",
-    "TV Stand",
-    "Television",
-    "Bookcase",
-    "Side Table",
-    "Rug",
-    "Lamp",
+    { label: "Two Seater Sofa", itemId: "chesterfield-sofa-2-seat-antique-tan" },
+    { label: "Three Seater Sofa", itemId: "recliner-sofa-3-seat-leather-tufted" },
+    { label: "Armchair", itemId: "armchair-1-seat-accent-chair" },
+    { label: "Coffee Table", itemId: "coffee-table-modern-povison-living-room" },
+    { label: "TV Stand", itemId: "tv-stand-farmhouse-75inch-plus" },
+    { label: "Television", itemId: "television-55inch-lg-oled-c4" },
+    { label: "Bookcase", itemId: "bookcase-5-shelf-wooden-standing" },
+    { label: "Side Table", itemId: "side-table-round-2-tier-fantersi" },
+    { label: "Rug", itemId: "area-rug-8x10-oriental" },
+    { label: "Lamp", itemId: "floor-lamp-tripod-66inch-black" },
   ],
   "dining-room": [
-    "Dining Table",
-    "Dining Chairs",
-    "Sideboard",
-    "Display Cabinet",
-    "Wine Rack",
-    "Bar Stools",
-    "Console Table",
-    "Mirror",
+    { label: "Dining Table", itemId: "dining-table-solid-wood-extendable" },
+    { label: "Dining Chairs", itemId: "dining-chairs-mid-century-set6" },
+    { label: "Sideboard", itemId: "sideboard-buffet-66inch-large" },
+    { label: "Display Cabinet", itemId: "display-cabinet-curio-lighted" },
+    { label: "Wine Rack", itemId: "wine-rack-bar-cabinet" },
+    { label: "Bar Stools", itemId: "bar-stools-swivel-set4" },
+    { label: "Console Table", itemId: "console-table-solid-wood-48inch" },
+    { label: "Mirror", itemId: "mirror-black-50x30-wall" },
   ],
   "kitchen": [
-    "Fridge Freezer",
-    "Washing Machine",
-    "Dishwasher",
-    "Microwave",
-    "Cooker",
-    "Chest Freezer",
-    "Small Appliance",
-    "Kitchen Boxes",
+    { label: "Fridge Freezer", itemId: "american-fridge-freezer-bosch" },
+    { label: "Washing Machine", itemId: "washing-machine-standard-dimensions" },
+    { label: "Dishwasher", itemId: "dishwasher-portable-vs-builtin" },
+    { label: "Microwave", itemId: "microwave-countertop-1-1cuft-1000watt" },
+    { label: "Cooker", itemId: "range-stove-oven-difference" },
+    { label: "Chest Freezer", itemId: "chest-freezer-7cuft-white-frigidaire" },
+    { label: "Small Appliance", itemId: "stand-mixer-kitchenaid-artisan-5quart" },
+    { label: "Kitchen Boxes", itemId: "moving-boxes-uboxes-1-room-economy-kit-15-boxes" },
   ],
   "bathroom": [
-    "Bathroom Cabinet",
-    "Mirror",
-    "Laundry Basket",
-    "Bathroom Shelf",
-    "Towel Rack",
-    "Bathroom Stool",
+    { label: "Bathroom Cabinet", itemId: "linen-cabinet-white-67inch" },
+    { label: "Mirror", itemId: "mirror-black-50x30-wall" },
+    { label: "Laundry Basket", itemId: "laundry-basket-cabinet" },
+    { label: "Bathroom Shelf", itemId: "corner-shelf-unit-black" },
+    { label: "Towel Rack", itemId: "ladder-towel-rack-wooden" },
+    { label: "Bathroom Stool", itemId: "bathroom-stool-teak-round" },
   ],
   "garden": [
-    "Garden Table",
-    "Garden Chairs",
-    "BBQ",
-    "Lawnmower",
-    "Garden Shed",
-    "Outdoor Storage Box",
-    "Garden Planters",
-    "Parasol",
+    { label: "Garden Table", itemId: "outdoor-dining-acacia-wood-table" },
+    { label: "Garden Chairs", itemId: "outdoor-lounge-chair-acacia-wood" },
+    { label: "BBQ", itemId: "bbq-grill-3in1-gas-charcoal-combo" },
+    { label: "Lawnmower", itemId: "lawnmower-30-rear-engine-rider" },
+    { label: "Garden Shed", itemId: "garden-shed-storage-organization" },
+    { label: "Outdoor Storage Box", itemId: "outdoor-storage-box-120-gallon" },
+    { label: "Garden Planters", itemId: "garden-planter-terra-cotta-large" },
+    { label: "Parasol", itemId: "outdoor-parasol-tropical-thatched-straw" },
   ],
   "other": [
-    "Large Box",
-    "Small Box",
-    "Suitcase",
-    "Travel Bag",
-    "Garment Bag",
-    "Storage Trunk",
-    "Backpack",
+    { label: "Large Box", itemId: "moving-boxes-uboxes-1-room-economy-kit-15-boxes" },
+    { label: "Small Box", itemId: "moving-boxes-uboxes-with-handles-10-premium" },
+    { label: "Suitcase", itemId: "suitcase-luggage-melalenia-sets-7-piece" },
+    { label: "Travel Bag", itemId: "travel-bag-litvyak-duffle-50l-canvas" },
+    { label: "Garment Bag", itemId: "garment-bag-60-deluxe-travel-wallybags" },
+    { label: "Storage Trunk", itemId: "storage-trunk-signature-design-ashley-kettleby" },
+    { label: "Backpack", itemId: "backpack-rucksack-ll-bean-continental" },
   ],
-} as const satisfies Record<RoomValue, readonly string[]>;
-
-type RoomItemLabel = (typeof ROOM_ITEM_LABELS)[RoomValue][number];
-
-const ITEM_MATCH_KEYWORDS: Record<RoomItemLabel, string[]> = {
-  "Single Bed & Mattress": ["single", "bed"],
-  "Double Bed & Mattress": ["double", "bed"],
-  "Kingsize Bed & Mattress": ["king", "bed"],
-  "Single Wardrobe": ["wardrobe", "single"],
-  "Double Wardrobe": ["wardrobe", "double"],
-  "Chest Of Drawers": ["dresser"],
-  "Bedside Table": ["bedside"],
-  "Dressing Table": ["dressing"],
-  "Television": ["television"],
-  "Side Table": ["end", "table"],
-  "Two Seater Sofa": ["sofa", "2"],
-  "Three Seater Sofa": ["sofa", "3"],
-  "Armchair": ["armchair"],
-  "Coffee Table": ["coffee", "table"],
-  "TV Stand": ["tv", "stand"],
-  "Bookcase": ["bookcase"],
-  "Rug": ["rug"],
-  "Lamp": ["lamp"],
-  "Dining Table": ["dining", "table"],
-  "Dining Chairs": ["dining", "chairs"],
-  "Sideboard": ["sideboard"],
-  "Display Cabinet": ["display", "cabinet"],
-  "Wine Rack": ["wine", "rack"],
-  "Bar Stools": ["bar", "stools"],
-  "Console Table": ["console", "table"],
-  "Mirror": ["mirror"],
-  "Fridge Freezer": ["fridge", "freezer"],
-  "Washing Machine": ["washing", "machine"],
-  "Dishwasher": ["dishwasher"],
-  "Microwave": ["microwave"],
-  "Cooker": ["range"],
-  "Chest Freezer": ["chest", "freezer"],
-  "Small Appliance": ["air", "fryer"],
-  "Kitchen Boxes": ["moving", "boxes"],
-  "Bathroom Cabinet": ["cabinet"],
-  "Laundry Basket": ["laundry", "basket"],
-  "Bathroom Shelf": ["shelf"],
-  "Towel Rack": ["towel", "rack"],
-  "Bathroom Stool": ["stool"],
-  "Garden Table": ["outdoor", "table"],
-  "Garden Chairs": ["outdoor", "chair"],
-  "BBQ": ["bbq"],
-  "Lawnmower": ["lawnmower"],
-  "Garden Shed": ["garden", "shed"],
-  "Outdoor Storage Box": ["outdoor", "storage", "box"],
-  "Garden Planters": ["garden", "planter"],
-  "Parasol": ["parasol"],
-  "Large Box": ["moving", "boxes"],
-  "Small Box": ["moving", "boxes"],
-  "Suitcase": ["suitcase"],
-  "Travel Bag": ["travel", "bag"],
-  "Garment Bag": ["garment", "bag"],
-  "Storage Trunk": ["storage", "trunk"],
-  "Backpack": ["backpack"],
-};
-
-const ITEM_ID_OVERRIDES: Record<RoomItemLabel, string[]> = {
-  "Single Bed & Mattress": ["single-bed-frame-sussex-white"],
-  "Double Bed & Mattress": [
-    "double-bed-frame-harper-storage-mattress",
-    "double-bed-frame-cavill-fabric-grey",
-    "double-bed-frame-florence-luxury",
-  ],
-  "Kingsize Bed & Mattress": [
-    "king-bed-frame-classic-luxe-storage",
-    "king-bed-frame-cavill-fabric-grey",
-    "ottoman-bed-frame-upholstered-king-linen-fabric",
-  ],
-  "Single Wardrobe": [
-    "wardrobe-single-door-personal-laminate-cabinet",
-    "wardrobe-single-door-modern-luxury-wooden",
-    "wardrobe-single-door-space-saving-bedroom-storage-unit",
-  ],
-  "Double Wardrobe": [
-    "mirrored-wardrobe-better-home-products-wood-double-sliding",
-    "wardrobe-double-door-harmony-wood-better-home",
-    "sliding-door-wardrobe-jubest-48-double-24-5-x80",
-  ],
-  "Chest Of Drawers": ["chest-drawers-mahogany", "dresser-antique-rosewood", "cassettone-dresser-chestnut"],
-  "Bedside Table": ["end-table-industrial-square-foluban", "end-table-4-tier-tribesigns", "side-table-round-2-tier-fantersi"],
-  "Dressing Table": ["dresser-5drawer-changing-table", "changing-table-dresser-combo", "dresser-antique-rosewood"],
-  "Television": ["television-55inch-lg-oled-c4", "television-50inch-smart-4k-google", "television-43inch-samsung-crystal"],
-  "Side Table": ["side-table-round-2-tier-fantersi", "end-table-4-tier-tribesigns", "end-table-industrial-square-foluban"],
-  "Two Seater Sofa": ["chesterfield-sofa-2-seat-antique-tan"],
-  "Three Seater Sofa": ["recliner-sofa-3-seat-leather-tufted", "sofa-3-seat-fabric-modern-lestar", "sofa-3-seat-couch-storage-layer"],
-  "Armchair": ["armchair-1-seat-accent-chair", "single-sofa-chair-1-seat-modern"],
-  "Coffee Table": ["coffee-table-modern-povison-living-room", "coffee-table-round-lift-top-wynny", "coffee-table-carved-walnut"],
-  "TV Stand": ["tv-stand-farmhouse-75inch-plus", "tv-stand-65inch-enhomee-large"],
-  "Bookcase": ["bookcase-5-shelf-wooden-standing", "bookshelf-living-room-storage-sunesa"],
-  "Rug": ["area-rug-8x10-oriental", "area-rug-9x12-non-slip", "persian-rug-traditional-medallion"],
-  "Lamp": ["floor-lamp-tripod-66inch-black", "floor-lamp-white-arc-modern", "table-lamp-set-2-farmhouse-usb-ports"],
-  "Dining Table": ["dining-table-solid-wood-extendable", "dining-table-extendable-55inch", "counter-height-dining-table"],
-  "Dining Chairs": ["dining-chairs-mid-century-set6", "dining-chairs-faux-leather-set", "dining-chairs-tufted-set2"],
-  "Sideboard": ["sideboard-buffet-66inch-large", "sideboard-cabinet-66inch-grey", "sideboard-cambridge-series"],
-  "Display Cabinet": ["display-cabinet-curio-lighted", "china-cabinet-curio-lighted", "display-cabinet-vintage"],
-  "Wine Rack": ["wine-rack-bar-cabinet", "wine-cabinet-58inch-storage"],
-  "Bar Stools": ["bar-stools-swivel-set4", "bar-stools-counter-height-full", "bar-stools-velvet-set2"],
-  "Console Table": ["console-table-solid-wood-48inch", "console-table-59inch-drawers-williamspace", "console-table-rustic-drawers-shelf"],
-  "Mirror": ["mirror-black-50x30-wall", "mirror-large-47x32-gold-living-room", "dining-mirror-wall-decor"],
-  "Fridge Freezer": ["american-fridge-freezer-bosch", "refrigerator-top-freezer-7-5cuft"],
-  "Washing Machine": ["washing-machine-standard-dimensions", "washing-machine-large-capacity-best", "washing-machine-types-whirlpool"],
-  "Dishwasher": ["dishwasher-portable-vs-builtin", "dishwasher-portable-countertop-aooden", "dishwasher-countertop-portable"],
-  "Microwave": ["microwave-countertop-1-1cuft-1000watt", "microwave-countertop-best-2025", "microwave-small-0-7cuft-700watt"],
-  "Cooker": ["range-stove-oven-difference", "gas-range-cooktop-48inch-duura"],
-  "Chest Freezer": ["chest-freezer-7cuft-white-frigidaire", "chest-freezer-mini-5cuft-black", "chest-freezer-small-3-5cuft-mini"],
-  "Small Appliance": ["stand-mixer-kitchenaid-artisan-5quart", "blender-food-processor-combo-tested", "food-processor-blender-8in1-kognita"],
-  "Kitchen Boxes": [
-    "moving-boxes-uboxes-1-room-economy-kit-15-boxes",
-    "moving-boxes-8-best-top-moving-house-boxes",
-    "moving-boxes-uboxes-with-handles-10-premium",
-  ],
-  "Bathroom Cabinet": ["linen-cabinet-white-67inch", "storage-cabinet-tall-white", "medicine-cabinet-mirror-led"],
-  "Laundry Basket": ["laundry-basket-cabinet", "laundry-hamper-bamboo"],
-  "Bathroom Shelf": ["corner-shelf-unit-black", "over-toilet-shelf-bamboo", "ladder-shelf-decorative-4ft"],
-  "Towel Rack": ["ladder-towel-rack-wooden", "towel-storage-rack-wall", "towel-rack-wall-28inch"],
-  "Bathroom Stool": ["bathroom-stool-teak-round", "shower-stool-teak-solid", "vanity-stool-upholstered"],
-  "Garden Table": ["outdoor-dining-acacia-wood-table", "outdoor-table-chairs-7pc-artbuske"],
-  "Garden Chairs": ["outdoor-lounge-chair-acacia-wood", "outdoor-lounge-chair-egg-wicker", "outdoor-lounge-chair-namaro-ikea"],
-  "BBQ": ["bbq-grill-3in1-gas-charcoal-combo", "bbq-grill-deluxe-charcoal-gas", "bbq-grill-propane-gas-charcoal"],
-  "Lawnmower": ["lawnmower-30-rear-engine-rider", "lawnmower-riding-home-depot", "lawnmower-cub-cadet-riding"],
-  "Garden Shed": ["garden-shed-storage-organization", "garden-shed-organization-supplies", "garden-shed-outdoor-storage-cabinet"],
-  "Outdoor Storage Box": ["outdoor-storage-box-120-gallon", "outdoor-storage-box-100-gallon"],
-  "Garden Planters": ["garden-planter-terra-cotta-large", "garden-planter-round-shallow-glazed", "garden-planter-ceramic-mosaic-large"],
-  "Parasol": ["outdoor-parasol-tropical-thatched-straw"],
-  "Large Box": [
-    "moving-boxes-uboxes-1-room-economy-kit-15-boxes",
-    "moving-boxes-8-best-top-moving-house-boxes",
-    "moving-boxes-uboxes-with-handles-10-premium",
-  ],
-  "Small Box": [
-    "moving-boxes-uboxes-with-handles-10-premium",
-    "moving-boxes-uboxes-1-room-economy-kit-15-boxes",
-    "moving-boxes-8-best-top-moving-house-boxes",
-  ],
-  "Suitcase": ["suitcase-luggage-melalenia-sets-7-piece", "suitcase-luggage-zimtown-3-piece-nested-spinner-tsa-lock-pink", "suitcase-luggage-extra-large-33-lightweight-4-wheel-abs-hard-shell"],
-  "Travel Bag": ["travel-bag-litvyak-duffle-50l-canvas", "travel-luggage-bags-brake-spinner-wheels"],
-  "Garment Bag": ["garment-bag-60-deluxe-travel-wallybags"],
-  "Storage Trunk": ["storage-trunk-signature-design-ashley-kettleby", "trunk-decorative-large", "trunk-antique-steamer"],
-  "Backpack": ["backpack-rucksack-ll-bean-continental"],
-};
-
-const ITEM_KEYWORD_GROUP_OVERRIDES: Partial<Record<RoomItemLabel, string[][]>> = {
-  "Chest Of Drawers": [["chest", "drawers"], ["dresser"]],
-  "Bedside Table": [["bedside", "table"], ["end", "table"], ["side", "table"]],
-  "Dressing Table": [["dressing", "table"], ["dresser"]],
-  "Side Table": [["side", "table"], ["end", "table"]],
-  "Kitchen Boxes": [["moving", "boxes"], ["moving", "box"], ["boxes"]],
-  "Large Box": [["moving", "boxes"], ["large", "box"], ["boxes"]],
-  "Small Box": [["moving", "boxes"], ["small", "box"], ["boxes"]],
-};
-
-const QUICK_ITEM_PRESETS: Record<string, ApiItem> = {
-  "Chest Of Drawers": {
-    id: "preset-chest-of-drawers",
-    name: "Chest Of Drawers",
-    slug: "preset-chest-of-drawers",
-    imagePath: "",
-  },
-  "Bedside Table": {
-    id: "preset-bedside-table",
-    name: "Bedside Table",
-    slug: "preset-bedside-table",
-    imagePath: "",
-  },
-  "Dressing Table": {
-    id: "preset-dressing-table",
-    name: "Dressing Table",
-    slug: "preset-dressing-table",
-    imagePath: "",
-  },
-  "Side Table": {
-    id: "preset-side-table",
-    name: "Side Table",
-    slug: "preset-side-table",
-    imagePath: "",
-  },
-  "Kitchen Boxes": {
-    id: "preset-kitchen-boxes",
-    name: "Kitchen Boxes",
-    slug: "preset-kitchen-boxes",
-    imagePath: "",
-  },
-};
+} as const satisfies Record<RoomValue, readonly { label: string; itemId: string }[]>;
 
 const HERO_PROPERTY_OPTIONS = [
+  { label: "Studio", detail: "Flat", value: "Studio Flat", moveSize: "studio", propertyKind: "flat" },
+  { label: "1 Bedroom", detail: "Flat", value: "1 Bedroom Flat", moveSize: "1-bedroom", propertyKind: "flat" },
+  { label: "2 Bedroom", detail: "Flat", value: "2 Bedroom Flat", moveSize: "2-bedrooms", propertyKind: "flat" },
+  { label: "3 Bedroom", detail: "Flat", value: "3 Bedroom Flat", moveSize: "3-bedrooms", propertyKind: "flat" },
+  { label: "4 Bedroom", detail: "Flat", value: "4 Bedroom Flat", moveSize: "4-bedrooms", propertyKind: "flat" },
+  { label: "5+ Bedroom", detail: "Flat", value: "5+ Bedroom Flat", moveSize: "5-plus-bedrooms", propertyKind: "flat" },
   { label: "1 Bedroom", detail: "House", value: "1 Bedroom House", moveSize: "1-bedroom" },
   { label: "2 Bedroom", detail: "House", value: "2 Bedroom House", moveSize: "2-bedrooms" },
   { label: "3 Bedroom", detail: "House", value: "3 Bedroom House", moveSize: "3-bedrooms" },
   { label: "4 Bedroom", detail: "House", value: "4 Bedroom House", moveSize: "4-bedrooms" },
   { label: "5+ Bedroom", detail: "House", value: "5+ Bedroom House", moveSize: "5-plus-bedrooms" },
-] as const;
+] as const satisfies readonly {
+  label: string;
+  detail: "House" | "Flat";
+  value: string;
+  moveSize: MoveSizeValue;
+  propertyKind?: "house" | "flat";
+}[];
 
 type HeroPropertyValue = (typeof HERO_PROPERTY_OPTIONS)[number]["value"];
-const DEFAULT_HERO_PROPERTY = HERO_PROPERTY_OPTIONS[0]!;
+type HeroPropertyOption = (typeof HERO_PROPERTY_OPTIONS)[number];
 
 const PARKING_OPTIONS = [
   { value: "on-site", label: "On-site" },
@@ -451,7 +276,6 @@ interface InventoryLine {
   imagePath: string;
   quantity: number;
   room: RoomValue;
-  source?: "preset";
 }
 
 interface CustomItemLine {
@@ -488,7 +312,7 @@ interface ApiCategory {
 
 interface QuoteResponse {
   reference: string;
-  status: "FIXED" | "MANUAL_REVIEW";
+  status: "AUTO_QUOTE" | "MANUAL_REVIEW";
   pricingVersion: number | null;
   pricingAlgorithmVersion: string | null;
   competitorBenchmarkId: string | null;
@@ -531,7 +355,7 @@ interface QuotePricePreview {
   pricingScopeKey?: string | null;
   date?: string | null;
   requestedMovers?: number | null;
-  status: "FIXED" | "MANUAL_REVIEW";
+  status: "AUTO_QUOTE" | "MANUAL_REVIEW";
   totalPence: number | null;
   originalTotalPence?: number | null;
   discountTotalPence?: number;
@@ -540,6 +364,11 @@ interface QuotePricePreview {
   competitorBenchmarkId?: string | null;
   benchmarkPricePence?: number | null;
   canonicalClassification?: "FULL_HOUSE" | "INDIVIDUAL_ITEMS" | "STUDENT_MOVE" | "MAN_AND_VAN" | "BUSINESS_REMOVAL" | "UNSUPPORTED" | null;
+  canonicalPropertySize?: MoveSizeValue | null;
+  resolvedMoveScope?: "FULL_PROPERTY_MOVE" | "PARTIAL_PROPERTY_MOVE" | "SINGLE_ITEM_MOVE" | "FEW_ITEMS_MOVE" | "STUDENT_MOVE" | "MAN_AND_VAN_MOVE" | "BUSINESS_MOVE" | "UNSUPPORTED_MOVE" | null;
+  moveScopeConfidence?: "HIGH" | "MEDIUM" | "LOW" | null;
+  moveScopeReasonCodes?: string[];
+  moveScopeConfirmationRecommended?: boolean;
   referenceProfileId?: string | null;
   referenceProfileVersion?: string | null;
   requiredCrew?: number | null;
@@ -551,6 +380,8 @@ interface QuotePricePreview {
   estimatedDurationMinutes?: number | null;
   vehicle?: QuoteResponse["vehicle"];
   inventory?: QuoteResponse["inventory"];
+  inventoryFacts?: unknown;
+  resourcePlan?: unknown;
   breakdown?: QuoteResponse["breakdown"];
   estimateSource?: "authoritative" | "fast";
   crew?: {
@@ -613,13 +444,12 @@ const PRICE_TONE_META: Record<PriceTone, {
 type InventoryListItem = ApiItem & {
   displayName: string;
   room: RoomValue;
-  pricingItemId: string;
 };
 
 function initialAccess(): AccessDraft {
   return {
     address: null,
-    propertyType: DEFAULT_HERO_PROPERTY.value,
+    propertyType: "",
     floor: 0,
     hasLift: false,
     internalStairs: 0,
@@ -658,117 +488,17 @@ function isQuoteReference(value: unknown): value is string {
   return typeof value === "string" && QUOTE_REFERENCE_PATTERN.test(value.trim());
 }
 
-function itemMatchesKeywordGroup(item: ApiItem, keywords: string[]) {
-  const source = normaliseSearch(`${item.name} ${item.slug}`);
-  return keywords.every((keyword) => source.includes(normaliseSearch(keyword)));
-}
-
-function findUnusedItemByIds(items: ApiItem[], ids: string[], used: Set<string>) {
-  for (const id of ids) {
-    const wanted = normaliseSearch(id);
-    const match = items.find((item) => (
-      !used.has(item.id) &&
-      !used.has(item.slug) &&
-      (wanted === normaliseSearch(item.id) || wanted === normaliseSearch(item.slug))
-    ));
-    if (match) return match;
-  }
-  return null;
-}
-
-function findUnusedItemByKeywords(items: ApiItem[], keywordGroups: string[][], used: Set<string>) {
-  for (const keywords of keywordGroups) {
-    const match = items.find((item) => !used.has(item.id) && !used.has(item.slug) && itemMatchesKeywordGroup(item, keywords));
-    if (match) return match;
-  }
-  return null;
-}
-
-function isRoomItemLabel(value: string): value is RoomItemLabel {
-  return Object.values(ROOM_ITEM_LABELS).some((labels) => (labels as readonly string[]).includes(value));
-}
-
-function itemIdsForDisplayName(displayName: string) {
-  return isRoomItemLabel(displayName) ? ITEM_ID_OVERRIDES[displayName] : [];
-}
-
-function keywordGroupsForDisplayName(displayName: string) {
-  if (isRoomItemLabel(displayName)) {
-    return ITEM_KEYWORD_GROUP_OVERRIDES[displayName] ?? [ITEM_MATCH_KEYWORDS[displayName]];
-  }
-  return [normaliseSearch(displayName).split(" ").filter(Boolean)];
-}
-
-function itemMatchForDisplayName(categories: ApiCategory[], displayName: string, used = new Set<string>()) {
-  const allItems = categories.flatMap((category) => category.items);
-  const keywordGroups = keywordGroupsForDisplayName(displayName);
-
-  return (
-    findUnusedItemByIds(allItems, itemIdsForDisplayName(displayName), used) ??
-    findUnusedItemByKeywords(allItems, keywordGroups, used)
-  );
-}
-
-function itemPricingIdentity(item: ApiItem) {
-  return item.slug || item.id;
-}
-
-function findCatalogueItemByIdentity(categories: ApiCategory[], itemId: string) {
-  const wanted = normaliseSearch(itemId);
+function findCatalogueItemByCanonicalId(categories: ApiCategory[], itemId: string) {
   return categories
     .flatMap((category) => category.items)
-    .find((candidate) => (
-      wanted === normaliseSearch(candidate.id) ||
-      wanted === normaliseSearch(candidate.slug)
-    ));
-}
-
-function resolveInventoryPayloadItemId(categories: ApiCategory[], item: InventoryLine) {
-  const catalogueMatch = findCatalogueItemByIdentity(categories, item.itemId);
-  if (catalogueMatch) return itemPricingIdentity(catalogueMatch);
-
-  const displayNameMatch = itemMatchForDisplayName(categories, item.name);
-  if (displayNameMatch) return itemPricingIdentity(displayNameMatch);
-
-  if (item.source === "preset" || item.itemId.startsWith("preset-")) return null;
-  return item.itemId;
+    .find((candidate) => candidate.id === itemId);
 }
 
 function buildInventoryRows(categories: ApiCategory[], roomValue: RoomValue): InventoryListItem[] {
-  const room = ROOMS.find((option) => option.value === roomValue) ?? ROOMS[0]!;
-  const candidates = categories
-    .filter((category) => (room.categoryNames as readonly string[]).includes(category.name))
-    .flatMap((category) => category.items);
-  const allItems = categories.flatMap((category) => category.items);
-  const used = new Set<string>();
-
-  return ROOM_ITEM_LABELS[roomValue].flatMap((displayName) => {
-    const keywordGroups = ITEM_KEYWORD_GROUP_OVERRIDES[displayName] ??
-      [ITEM_MATCH_KEYWORDS[displayName] ?? normaliseSearch(displayName).split(" ").filter(Boolean)];
-    const visualMatch =
-      findUnusedItemByIds(allItems, ITEM_ID_OVERRIDES[displayName] ?? [], used) ??
-      findUnusedItemByKeywords(candidates, keywordGroups, used) ??
-      findUnusedItemByKeywords(allItems, keywordGroups, used);
-    const preset = QUICK_ITEM_PRESETS[displayName];
-
-    if (visualMatch) {
-      used.add(visualMatch.id);
-      used.add(visualMatch.slug);
-      return [{ ...visualMatch, displayName, name: displayName, room: roomValue, pricingItemId: visualMatch.slug }];
-    }
-
-    if (preset && !used.has(preset.id)) {
-      used.add(preset.id);
-      return [{
-        ...preset,
-        displayName,
-        name: displayName,
-        room: roomValue,
-        pricingItemId: preset.id,
-      }];
-    }
-
-    return [];
+  return ROOM_DISPLAY_ITEMS[roomValue].flatMap(({ label, itemId }) => {
+    const catalogueItem = findCatalogueItemByCanonicalId(categories, itemId);
+    if (!catalogueItem) return [];
+    return [{ ...catalogueItem, displayName: label, name: label, room: roomValue }];
   });
 }
 
@@ -793,10 +523,6 @@ async function recordQuoteEvent(params: {
 
 function typeForItems(moveType: string) {
   return moveType === "office-move" ? "business" : "residential";
-}
-
-function normaliseSearch(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function formatRoomPropertyType(propertyType: string) {
@@ -919,7 +645,7 @@ function selectedAddonSummaries(
 
 function getFixedPreviewPrices(pricePreviews: Record<string, QuotePricePreview>) {
   return Object.values(pricePreviews).flatMap((preview) => (
-    preview.status === "FIXED" && typeof preview.totalPence === "number" && Number.isFinite(preview.totalPence)
+    preview.status === "AUTO_QUOTE" && typeof preview.totalPence === "number" && Number.isFinite(preview.totalPence)
       ? [preview.totalPence]
       : []
   ));
@@ -947,7 +673,7 @@ function pricePreviewsForMover(
 
 function fixedPreviewValues(pricePreviews: Record<string, QuotePricePreview>): QuotePricePreview[] {
   return Object.values(pricePreviews)
-    .filter((preview) => preview.status === "FIXED" && typeof preview.totalPence === "number")
+    .filter((preview) => preview.status === "AUTO_QUOTE" && typeof preview.totalPence === "number")
     .sort((a, b) => (a.totalPence ?? 0) - (b.totalPence ?? 0));
 }
 
@@ -1069,7 +795,7 @@ function isSameCalendarMonth(date: Date, referenceDate: Date) {
 }
 
 function isFixedPreview(preview: QuotePricePreview | undefined): preview is QuotePricePreview & { totalPence: number } {
-  return preview?.status === "FIXED" && typeof preview.totalPence === "number" && Number.isFinite(preview.totalPence);
+  return preview?.status === "AUTO_QUOTE" && typeof preview.totalPence === "number" && Number.isFinite(preview.totalPence);
 }
 
 function currentDateFlexibilityMode(
@@ -1198,8 +924,7 @@ function isMoverCount(value: unknown): value is 1 | 2 {
 function normalisePropertyType(value: unknown, fallback: string) {
   if (typeof value !== "string") return fallback;
   if (!value.trim()) return fallback;
-  if (value === "House") return "2 Bedroom House";
-  if (value === "Flat") return "2 Bedroom Flat";
+  if (value === "House" || value === "Flat") return fallback;
   return value;
 }
 
@@ -1236,7 +961,6 @@ function restoreInventoryLines(value: unknown): InventoryLine[] {
       imagePath: entry.imagePath,
       quantity,
       room: entry.room,
-      source: entry.source === "preset" ? "preset" : undefined,
     }];
   });
 }
@@ -1285,6 +1009,31 @@ function normaliseHeroProperty(value: string): HeroPropertyValue | "" {
   return HERO_PROPERTY_OPTIONS.find((option) => option.value === value)?.value ?? "";
 }
 
+function heroPropertyOptionFor(value: string): HeroPropertyOption | undefined {
+  return HERO_PROPERTY_OPTIONS.find((option) => option.value === value);
+}
+
+function isFlatProperty(value: string): boolean {
+  return heroPropertyOptionFor(value)?.detail === "Flat";
+}
+
+function accessPatchForProperty(option: HeroPropertyOption): Partial<AccessDraft> {
+  if (option.detail === "Flat") {
+    return { propertyType: option.value };
+  }
+  return {
+    propertyType: option.value,
+    floor: 0,
+    hasLift: false,
+    internalStairs: 0,
+    externalStairs: 0,
+  };
+}
+
+function moveTypeForPropertySelection(collectionProperty: string, deliveryProperty: string): "house-move" | "flat-move" {
+  return isFlatProperty(collectionProperty) || isFlatProperty(deliveryProperty) ? "flat-move" : "house-move";
+}
+
 function floorLabel(floor: number) {
   if (floor === 0) return "Ground floor";
   const suffix = floor % 100 >= 11 && floor % 100 <= 13
@@ -1304,15 +1053,6 @@ const FLOOR_OPTIONS = Array.from({ length: 31 }, (_, floor) => ({
   label: floorLabel(floor),
 }));
 
-function HeroSectionHeader({ children, hint = false }: { children: ReactNode; hint?: boolean }) {
-  return (
-    <HStack gap={2} color="#0E1B3A" fontSize="xs" fontWeight={900} textTransform="uppercase" letterSpacing="0.02em">
-      <Text>{children}</Text>
-      {hint && <FiInfo size={14} color="#7C8AA5" />}
-    </HStack>
-  );
-}
-
 function HeroPropertyCards({
   title,
   value,
@@ -1322,9 +1062,9 @@ function HeroPropertyCards({
   title: string;
   value: string;
   compact?: boolean;
-  onChange: (property: (typeof HERO_PROPERTY_OPTIONS)[number]) => void;
+  onChange: (property: HeroPropertyOption) => void;
 }) {
-  const selectedOption = HERO_PROPERTY_OPTIONS.find((option) => option.value === value);
+  const selectedOption = heroPropertyOptionFor(value);
   return (
     <Box w="full" minW={0}>
       <Box position="relative" w="full">
@@ -1358,10 +1098,11 @@ function HeroPropertyCards({
           <select
             value={value}
             onChange={(event) => {
-              const nextOption = HERO_PROPERTY_OPTIONS.find((option) => option.value === event.target.value);
+              const nextOption = heroPropertyOptionFor(event.target.value);
               if (nextOption) onChange(nextOption);
             }}
             aria-label={title}
+            aria-invalid={selectedOption ? undefined : true}
             style={{
               width: "100%",
               height: "100%",
@@ -1371,6 +1112,9 @@ function HeroPropertyCards({
               outline: "none",
             }}
           >
+            <option value="" disabled>
+              Select property size
+            </option>
             {HERO_PROPERTY_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label} {option.detail}
@@ -1406,9 +1150,11 @@ function RouteDetailsFields({
   locationColor: string;
   propertyValue: string;
   onChange: (value: AccessDraft) => void;
-  onPropertyChange: (property: (typeof HERO_PROPERTY_OPTIONS)[number]) => void;
+  onPropertyChange: (property: HeroPropertyOption) => void;
 }) {
   const patch = (updates: Partial<AccessDraft>) => onChange({ ...value, ...updates });
+  const selectedProperty = heroPropertyOptionFor(propertyValue);
+  const showFlatAccess = selectedProperty?.detail === "Flat";
   const updateFloor = (rawValue: string) => {
     const nextFloor = Math.max(0, Math.min(30, Number.parseInt(rawValue || "0", 10) || 0));
     patch({
@@ -1424,99 +1170,101 @@ function RouteDetailsFields({
         compact
         onChange={onPropertyChange}
       />
-      <SimpleGrid columns={{ base: 1, sm: 2 }} gap={2.5} w="full">
-        <Box>
-          <Text mb={1.5} fontSize="xs" color="#0E1B3A" fontWeight={900} textTransform="uppercase">
-            Floor number
-          </Text>
-          <Box
-            position="relative"
-            h="38px"
-            pl={3}
-            pr={9}
-            borderRadius="md"
-            border="1px solid #D8E2F0"
-            bg="#FFFFFF"
-            color={bookingTheme.ink}
-            fontSize="sm"
-            fontWeight={800}
-            _focusWithin={{ borderColor: locationColor, boxShadow: `0 0 0 2px ${locationColor}22` }}
-          >
-            <select
-              value={value.floor}
-              onChange={(event) => updateFloor(event.target.value)}
-              aria-label={`${title} floor number`}
-              style={{
-                width: "100%",
-                height: "100%",
-                appearance: "none",
-                border: 0,
-                background: "transparent",
-                outline: "none",
+      {showFlatAccess && (
+        <SimpleGrid columns={{ base: 1, sm: 2 }} gap={2.5} w="full">
+          <Box>
+            <Text mb={1.5} fontSize="xs" color="#0E1B3A" fontWeight={900} textTransform="uppercase">
+              Floor number
+            </Text>
+            <Box
+              position="relative"
+              h="38px"
+              pl={3}
+              pr={9}
+              borderRadius="md"
+              border="1px solid #D8E2F0"
+              bg="#FFFFFF"
+              color={bookingTheme.ink}
+              fontSize="sm"
+              fontWeight={800}
+              _focusWithin={{ borderColor: locationColor, boxShadow: `0 0 0 2px ${locationColor}22` }}
+            >
+              <select
+                value={value.floor}
+                onChange={(event) => updateFloor(event.target.value)}
+                aria-label={`${title} floor number`}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  appearance: "none",
+                  border: 0,
+                  background: "transparent",
+                  outline: "none",
+                }}
+              >
+                {FLOOR_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <Box
+                position="absolute"
+                right={3}
+                top="50%"
+                transform="translateY(-50%)"
+                color="#344463"
+                pointerEvents="none"
+              >
+                <FiChevronDown size={16} />
+              </Box>
+            </Box>
+          </Box>
+          <Box>
+            <Text mb={1.5} fontSize="xs" color="#0E1B3A" fontWeight={900} textTransform="uppercase">
+              Lift available
+            </Text>
+            <Box
+              as="button"
+              onClick={() => {
+                const nextHasLift = !value.hasLift;
+                patch({
+                  hasLift: nextHasLift,
+                  internalStairs: nextHasLift ? 0 : Math.max(value.internalStairs, value.floor),
+                });
               }}
-            >
-              {FLOOR_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <Box
-              position="absolute"
-              right={3}
-              top="50%"
-              transform="translateY(-50%)"
-              color="#344463"
-              pointerEvents="none"
-            >
-              <FiChevronDown size={16} />
-            </Box>
-          </Box>
-        </Box>
-        <Box>
-          <Text mb={1.5} fontSize="xs" color="#0E1B3A" fontWeight={900} textTransform="uppercase">
-            Lift available
-          </Text>
-          <Box
-            as="button"
-            onClick={() => {
-              const nextHasLift = !value.hasLift;
-              patch({
-                hasLift: nextHasLift,
-                internalStairs: nextHasLift ? 0 : Math.max(value.internalStairs, value.floor),
-              });
-            }}
-            w="full"
-            h="38px"
-            px={3}
-            borderRadius="md"
-            border={`1.5px solid ${value.hasLift ? locationColor : "#D8E2F0"}`}
-            bg={value.hasLift ? `${locationColor}12` : "#FFFFFF"}
-            color="#0E1B3A"
-            display="flex"
-            alignItems="center"
-            justifyContent="space-between"
-            fontSize="sm"
-            fontWeight={900}
-            _hover={{ borderColor: locationColor }}
-            _focusVisible={{ outline: `2px solid ${locationColor}`, outlineOffset: "2px" }}
-          >
-            <Text>{value.hasLift ? "Yes" : "No"}</Text>
-            <Box
-              w="34px"
-              h="20px"
-              borderRadius="full"
-              bg={value.hasLift ? locationColor : "#D8E2F0"}
-              p="2px"
+              w="full"
+              h="38px"
+              px={3}
+              borderRadius="md"
+              border={`1.5px solid ${value.hasLift ? locationColor : "#D8E2F0"}`}
+              bg={value.hasLift ? `${locationColor}12` : "#FFFFFF"}
+              color="#0E1B3A"
               display="flex"
-              justifyContent={value.hasLift ? "flex-end" : "flex-start"}
-              transition="background 0.18s ease"
+              alignItems="center"
+              justifyContent="space-between"
+              fontSize="sm"
+              fontWeight={900}
+              _hover={{ borderColor: locationColor }}
+              _focusVisible={{ outline: `2px solid ${locationColor}`, outlineOffset: "2px" }}
             >
-              <Box w="16px" h="16px" borderRadius="full" bg="#FFFFFF" boxShadow="0 1px 3px rgba(0,0,0,0.18)" />
+              <Text>{value.hasLift ? "Yes" : "No"}</Text>
+              <Box
+                w="34px"
+                h="20px"
+                borderRadius="full"
+                bg={value.hasLift ? locationColor : "#D8E2F0"}
+                p="2px"
+                display="flex"
+                justifyContent={value.hasLift ? "flex-end" : "flex-start"}
+                transition="background 0.18s ease"
+              >
+                <Box w="16px" h="16px" borderRadius="full" bg="#FFFFFF" boxShadow="0 1px 3px rgba(0,0,0,0.18)" />
+              </Box>
             </Box>
           </Box>
-        </Box>
-      </SimpleGrid>
+        </SimpleGrid>
+      )}
     </VStack>
   );
 }
@@ -1540,7 +1288,7 @@ function RouteColumn({
   propertyValue: string;
   showDetailsOnMobile?: boolean;
   onChange: (value: AccessDraft) => void;
-  onPropertyChange: (property: (typeof HERO_PROPERTY_OPTIONS)[number]) => void;
+  onPropertyChange: (property: HeroPropertyOption) => void;
 }) {
   const patch = (updates: Partial<AccessDraft>) => onChange({ ...value, ...updates });
   return (
@@ -1587,106 +1335,13 @@ function RouteColumn({
   );
 }
 
-function MoveDateBlock({
-  moveDate,
-  flexibleDate,
-  minDate,
-  onDateChange,
-  onFlexibleChange,
-}: {
-  moveDate: string;
-  flexibleDate: boolean;
-  minDate: string;
-  onDateChange: (date: string) => void;
-  onFlexibleChange: (value: boolean) => void;
-}) {
-  return (
-    <VStack align="start" gap={2.5} w="full">
-      <Box position="relative" w="full">
-        <Box
-          position="absolute"
-          left={3}
-          top="50%"
-          transform="translateY(-50%)"
-          color={bookingTheme.heroBlue}
-          pointerEvents="none"
-          zIndex={1}
-        >
-          <FiCalendar size={16} />
-        </Box>
-        <Box
-          asChild
-          w="full"
-          h="38px"
-          pl="38px"
-          pr="38px"
-          borderRadius="lg"
-          bg="#FFFFFF"
-          border={`1px solid ${moveDate ? bookingTheme.heroBlue : "#D8E2F0"}`}
-          color={moveDate ? bookingTheme.ink : bookingTheme.muted}
-          fontSize="sm"
-          fontWeight={700}
-          _focusWithin={{
-            borderColor: bookingTheme.heroBlue,
-            boxShadow: "0 0 0 2px rgba(37,99,235,0.18)",
-          }}
-        >
-          <input
-            type={moveDate ? "date" : "text"}
-            min={minDate}
-            value={moveDate}
-            onChange={(event) => onDateChange(event.target.value)}
-            onFocus={(event) => {
-              event.currentTarget.type = "date";
-              const picker = event.currentTarget as HTMLInputElement & { showPicker?: () => void };
-              picker.showPicker?.();
-            }}
-            onBlur={(event) => {
-              if (!event.currentTarget.value) event.currentTarget.type = "text";
-            }}
-            placeholder="When are you moving?"
-            aria-label="When are you moving?"
-            style={{ width: "100%", height: "100%", outline: "none" }}
-          />
-        </Box>
-      </Box>
-      <Box
-        as="button"
-        onClick={() => onFlexibleChange(!flexibleDate)}
-        display="flex"
-        alignItems="center"
-        gap={2.5}
-        color={bookingTheme.ink}
-        fontSize="sm"
-        fontWeight={800}
-        textAlign="left"
-      >
-        <Box
-          w="20px"
-          h="20px"
-          borderRadius="md"
-          border={`1.5px solid ${flexibleDate ? bookingTheme.heroBlue : "#C9D4E5"}`}
-          bg={flexibleDate ? bookingTheme.heroBlue : "#FFFFFF"}
-          color="#FFFFFF"
-          display="flex"
-          alignItems="center"
-          justifyContent="center"
-        >
-          {flexibleDate && <FiCheck size={15} />}
-        </Box>
-        I don&apos;t have a move date yet
-      </Box>
-    </VStack>
-  );
-}
-
-function TrustpilotBadge() {
+function GoogleRatingBadge() {
   return (
     <VStack align="start" gap={1}>
       <HStack gap={1.5} fontSize="xs" color={bookingTheme.ink}>
-        <FiStar color="#00B67A" fill="#00B67A" size={14} />
-        <Text fontWeight={800}>Trustpilot</Text>
-        <Text>200,570</Text>
+        <FiStar color="#FFB900" fill="#FFB900" size={14} />
+        <Text fontWeight={800}>Google</Text>
+        <Text>{SITE.maps.rating.toFixed(1)} · {SITE.maps.reviewCount} reviews</Text>
       </HStack>
       <HStack gap="2px">
         {Array.from({ length: 5 }).map((_, index) => (
@@ -1694,7 +1349,7 @@ function TrustpilotBadge() {
             key={index}
             w="22px"
             h="22px"
-            bg="#00B67A"
+            bg={index < Math.round(SITE.maps.rating) ? "#FFB900" : "#CBD5E1"}
             color="#FFFFFF"
             display="flex"
             alignItems="center"
@@ -1959,14 +1614,14 @@ function HeroBenefitsStrip() {
           </Box>
           <Box>
             <HStack gap={2}>
-              <Text fontSize="2xl" fontWeight={900} color="#0E1B3A">4.9/5</Text>
+              <Text fontSize="2xl" fontWeight={900} color="#0E1B3A">{SITE.maps.rating.toFixed(1)}/5</Text>
               <HStack gap={0.5} color="#FFB900">
                 {Array.from({ length: 5 }).map((_, index) => (
-                  <FiStar key={index} fill="currentColor" size={15} />
+                  <FiStar key={index} fill={index < Math.round(SITE.maps.rating) ? "currentColor" : "none"} size={15} />
                 ))}
               </HStack>
             </HStack>
-            <Text fontSize="xs" color="#344463">Based on 200,570+ reviews</Text>
+            <Text fontSize="xs" color="#344463">Rated on Google · {SITE.maps.reviewCount} reviews</Text>
           </Box>
         </HStack>
       </SimpleGrid>
@@ -3693,7 +3348,7 @@ function PriceOptionsSidebar({
           {coverageMode === "standard" && typeof benchmarkSavingPercent === "number" && benchmarkSavingPercent > 0 && (
             <HStack mt={4} p={3} borderRadius="md" border="1px solid #B9E7CF" bg="#F0FFF7" color="#16805A" justify="center">
               <FiCreditCard />
-              <Text fontSize="sm" fontWeight={900}>{benchmarkSavingPercent}% saving vs other companies</Text>
+              <Text fontSize="sm" fontWeight={900}>{benchmarkSavingPercent}% verified saving</Text>
             </HStack>
           )}
         </Box>
@@ -3878,9 +3533,11 @@ function PriceOptionsStep({
   failedPreviewDates,
   pricePreviewLoading,
   pricePreviewError,
+  partialMoveConfirmationText,
   services,
   dismantleCount,
   assemblyCount,
+  onConfirmPartialMove,
   onMoverChange,
   onCalendarPrevious,
   onCalendarNext,
@@ -3909,9 +3566,11 @@ function PriceOptionsStep({
   failedPreviewDates: Record<string, true>;
   pricePreviewLoading: boolean;
   pricePreviewError: string;
+  partialMoveConfirmationText?: string;
   services: BookingServiceState;
   dismantleCount: number;
   assemblyCount: number;
+  onConfirmPartialMove?: () => void;
   onMoverChange: (value: 1 | 2) => void;
   onCalendarPrevious: () => void;
   onCalendarNext: () => void;
@@ -4000,7 +3659,7 @@ function PriceOptionsStep({
   const handleDesktopDateSelect = (date: string) => {
     const preview = selectedMoverPricePreviews[date];
     const canAdvance =
-      preview?.status === "FIXED" &&
+      preview?.status === "AUTO_QUOTE" &&
       typeof preview.totalPence === "number";
     onDateSelect(date, { advance: canAdvance });
   };
@@ -4017,7 +3676,7 @@ function PriceOptionsStep({
             <Box display={{ base: "block", md: "none" }}>
               <HStack justify="space-between" mb={3}>
                 <Text fontSize="lg" fontWeight={900} color="#4B5563">
-                  Step 4 of 5
+                  Step 3 of 5
                 </Text>
                 <Text fontSize="lg" fontWeight={800} color="#4B5563">
                   Date & team
@@ -4080,6 +3739,42 @@ function PriceOptionsStep({
                 )}
               </HStack>
             </Box>
+
+            {partialMoveConfirmationText && (
+              <Box
+                p={{ base: 4, md: 5 }}
+                borderRadius="md"
+                border="1px solid #F59E0B"
+                bg="#FFFBEB"
+                color="#78350F"
+              >
+                <HStack align="start" gap={3}>
+                  <Box mt="2px" flexShrink={0}>
+                    <FiAlertTriangle size={18} />
+                  </Box>
+                  <Box minW={0} flex="1">
+                    <Text fontSize="sm" fontWeight={900} lineHeight="1.45">
+                      {partialMoveConfirmationText}
+                    </Text>
+                    <Button
+                      type="button"
+                      mt={3}
+                      minH="40px"
+                      px={3}
+                      borderRadius="md"
+                      bg={bookingTheme.ink}
+                      color="white"
+                      fontSize="sm"
+                      fontWeight={900}
+                      onClick={onConfirmPartialMove}
+                      _focusVisible={{ outline: `2px solid ${bookingTheme.heroBlue}`, outlineOffset: "2px" }}
+                    >
+                      Yes, listed items only
+                    </Button>
+                  </Box>
+                </HStack>
+              </Box>
+            )}
 
             <Box>
               <Text mb={3} fontSize={{ base: "2xl", md: "3xl" }} fontWeight={900} color={bookingTheme.ink}>
@@ -5337,7 +5032,14 @@ function StripeRedirectPanel({
 }) {
   return (
     <VStack align="stretch" gap={3} w="full">
-      <Box p={4} borderRadius="lg" border={`1px solid ${bookingTheme.heroBlue}`} bg="rgba(37,99,235,0.08)">
+      <Box
+        p={4}
+        borderRadius="lg"
+        border={`1px solid ${bookingTheme.heroBlue}`}
+        bg="rgba(37,99,235,0.08)"
+        role="status"
+        aria-live="polite"
+      >
         <HStack gap={3}>
           {busy && <Spinner size="sm" color={bookingTheme.heroBlue} />}
           <Box>
@@ -5467,7 +5169,7 @@ function PrimaryButton({
 export function InstantQuotePage() {
   const [step, setStep] = useState(0);
   const [moveType, setMoveType] = useState<(typeof MOVE_TYPES)[number]["value"]>("house-move");
-  const [moveSize, setMoveSize] = useState<MoveSizeValue>(DEFAULT_HERO_PROPERTY.moveSize);
+  const [moveSize, setMoveSize] = useState<MoveSizeValue | "">("");
   const [collection, setCollection] = useState<AccessDraft>(() => initialAccess());
   const [delivery, setDelivery] = useState<AccessDraft>(() => initialAccess());
   const [hasAdditionalStop, setHasAdditionalStop] = useState(false);
@@ -5482,6 +5184,7 @@ export function InstantQuotePage() {
   const [calendarAnchor, setCalendarAnchor] = useState(() => normaliseDate(new Date()));
   const [selectedMoverCount, setSelectedMoverCount] = useState<1 | 2>(1);
   const [showCoverPrompt, setShowCoverPrompt] = useState(false);
+  const [partialMoveConfirmed, setPartialMoveConfirmed] = useState(false);
   const [dismantleCount, setDismantleCount] = useState(0);
   const [assemblyCount, setAssemblyCount] = useState(0);
   const [sameDay, setSameDay] = useState(false);
@@ -5493,6 +5196,7 @@ export function InstantQuotePage() {
   const [activeRoom, setActiveRoom] = useState<RoomValue>("bedroom");
   const [categories, setCategories] = useState<ApiCategory[]>([]);
   const [itemsLoading, setItemsLoading] = useState(true);
+  const [itemsError, setItemsError] = useState("");
   const [services, setServices] = useState<BookingServiceState>({
     packing: false,
     packingMaterials: false,
@@ -5535,6 +5239,7 @@ export function InstantQuotePage() {
   const pricePreviewAbortControllerRef = useRef<AbortController | null>(null);
   const quoteRequestRef = useRef(0);
   const quoteSubmitKeyRef = useRef<{ stateKey: string; idempotencyKey: string } | null>(null);
+  const paymentRedirectingRef = useRef(false);
   const [bookingRef, setBookingRef] = useState("");
   const [clientQuoteReference, setClientQuoteReference] = useState("");
   const [promotionCode, setPromotionCode] = useState("");
@@ -5559,10 +5264,23 @@ export function InstantQuotePage() {
     void (async () => {
       try {
         const response = await fetch(`/api/items?type=${typeForItems(moveType)}`);
+        if (!response.ok) {
+          if (!cancelled) {
+            setCategories([]);
+            setItemsError("Inventory is temporarily unavailable. Please try again shortly.");
+          }
+          return;
+        }
         const data = await response.json() as ApiCategory[];
-        if (!cancelled) setCategories(data);
+        if (!cancelled) {
+          setCategories(data);
+          setItemsError("");
+        }
       } catch {
-        if (!cancelled) setCategories([]);
+        if (!cancelled) {
+          setCategories([]);
+          setItemsError("Inventory is temporarily unavailable. Please try again shortly.");
+        }
       } finally {
         if (!cancelled) setItemsLoading(false);
       }
@@ -5654,6 +5372,29 @@ export function InstantQuotePage() {
     const timeout = window.setTimeout(() => setDraftNotice(""), 3400);
     return () => window.clearTimeout(timeout);
   }, [draftNotice]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const payment = params.get("payment");
+    const quoteReference = params.get("quote");
+    if (quoteReference && isQuoteReference(quoteReference)) {
+      setClientQuoteReference(quoteReference);
+    }
+    if (!payment) return;
+
+    const messageByStatus: Record<string, string> = {
+      processing: "Payment received by Stripe. Your booking confirmation is being verified.",
+      not_paid: "Payment was not completed. Your quote details are still here.",
+      cancelled: "Stripe checkout was cancelled. Your quote details are still here.",
+      expired: "That Stripe checkout session has expired. Your quote details are still here, so you can open checkout again while the quote is valid.",
+      missing_session: "Stripe did not return a checkout session. Please retry from your saved quote.",
+      invalid_session: "Stripe returned an invalid checkout session. Please contact us before paying again.",
+      error: "We could not check the Stripe payment status. Please contact us before paying again.",
+    };
+    const message = messageByStatus[payment] ?? "Payment status is being checked. Please contact us before paying again.";
+    setPaymentError(message);
+    setDraftNotice(message);
+  }, []);
 
   useEffect(() => {
     if (isQuoteReference(quote?.reference)) {
@@ -5771,7 +5512,7 @@ export function InstantQuotePage() {
   }, [moveSize, moveType, quote?.reference, step]);
 
   useEffect(() => {
-    if (step !== STEPS.length - 1 || quote?.status !== "FIXED") return;
+    if (step !== STEPS.length - 1 || quote?.status !== "AUTO_QUOTE") return;
     const frame = window.requestAnimationFrame(() => {
       window.scrollTo({ top: 0, behavior: "auto" });
     });
@@ -5780,8 +5521,13 @@ export function InstantQuotePage() {
 
   const activeRoomDefinition = ROOMS.find((room) => room.value === activeRoom) ?? ROOMS[0]!;
   const visibleItems = useMemo(() => buildInventoryRows(categories, activeRoom), [activeRoom, categories]);
+  const knownInventoryItemIds = useMemo(
+    () => new Set(categories.flatMap((category) => category.items.map((item) => item.id))),
+    [categories]
+  );
   const selectedUnits = items.reduce((sum, item) => sum + item.quantity, 0) +
     customItems.reduce((sum, item) => sum + item.quantity, 0);
+  const quoteMoveSize: MoveSizeValue = moveSize || "few-items";
   const activeRoomUnits = items
     .filter((item) => item.room === activeRoom)
     .reduce((sum, item) => sum + item.quantity, 0) +
@@ -5791,17 +5537,13 @@ export function InstantQuotePage() {
 
   const selectedInventoryPayload = useMemo(() => (
     items
-      .filter((item) => item.quantity > 0 && item.itemId.trim())
-      .flatMap((item) => {
-        const itemId = resolveInventoryPayloadItemId(categories, item);
-        if (!itemId) return [];
-        return [{
-          itemId,
-          quantity: Math.max(1, Math.min(99, Math.floor(item.quantity))),
-          room: item.room,
-        }];
-      })
-  ), [categories, items]);
+      .filter((item) => item.quantity > 0 && knownInventoryItemIds.has(item.itemId))
+      .map((item) => ({
+        itemId: item.itemId,
+        quantity: Math.max(1, Math.min(99, Math.floor(item.quantity))),
+        room: item.room,
+      }))
+  ), [items, knownInventoryItemIds]);
 
   const selectedCustomItemPayload = useMemo(() => (
     customItems
@@ -5829,7 +5571,7 @@ export function InstantQuotePage() {
   );
   const scopePricingClassification = pricingClassificationForScope(
     moveType,
-    moveSize,
+    quoteMoveSize,
     selectedCustomItemPayload.length > 0
   );
   const serviceRecord = services as Record<string, unknown>;
@@ -5837,11 +5579,22 @@ export function InstantQuotePage() {
     inventory: selectedInventoryPayload,
     customInventory: selectedCustomItemPayload,
     moveType,
-    propertySize: moveSize,
+    propertySize: quoteMoveSize,
     pricingClassification: scopePricingClassification,
     packingIncluded: Boolean(services.packing),
     serviceLevel: typeof serviceRecord.serviceLevel === "string" ? serviceRecord.serviceLevel : "standard",
     crew: selectedMoverCount,
+    pickupWindow: arrivalWindow,
+    urgency: sameDay ? "SAME_DAY" : urgent ? "URGENT" : "STANDARD",
+    dayType: moveDate && [0, 6].includes(new Date(`${moveDate}T12:00:00`).getDay()) ? "WEEKEND" : "WEEKDAY",
+    waitingMinutes: typeof serviceRecord.waitingMinutes === "number" ? serviceRecord.waitingMinutes : null,
+    dateFlexibility: {
+      flexibleDate,
+      flexibleTime,
+      exactTime,
+      earliestDate,
+      latestDate,
+    },
     pickup: collection,
     destination: delivery,
     additionalStop: hasAdditionalStop ? additionalStop : null,
@@ -5878,20 +5631,24 @@ export function InstantQuotePage() {
     flexibleTime,
     hasAdditionalStop,
     latestDate,
-    moveSize,
+    moveDate,
     moveType,
     promotionCode,
+    quoteMoveSize,
     scopePricingClassification,
     selectedInventoryPayload,
     selectedMoverCount,
     serviceRecord.serviceLevel,
+    serviceRecord.waitingMinutes,
     services,
+    sameDay,
     urgent,
   ]);
   const pricingStateKey = useMemo(() => stablePreviewStringify({
     sourceChannel: "PUBLIC_SELF_BOOKING",
     moveType,
     moveSize,
+    quoteMoveSize,
     collection,
     delivery,
     hasAdditionalStop,
@@ -5937,6 +5694,7 @@ export function InstantQuotePage() {
     moveSize,
     moveType,
     promotionCode,
+    quoteMoveSize,
     sameDay,
     selectedMoverCount,
     selectedCustomItemPayload,
@@ -5959,6 +5717,7 @@ export function InstantQuotePage() {
     setPaymentError("");
     setPricePreviews({});
     setFailedPreviewDates({});
+    setPartialMoveConfirmed(false);
     setPricePreviewInvalidationKey((value) => value + 1);
     setPricePreviewLoading(step >= 2 && step <= 4);
     setPricePreviewError("");
@@ -5975,6 +5734,7 @@ export function InstantQuotePage() {
     setPaymentError("");
     setPricePreviews({});
     setFailedPreviewDates({});
+    setPartialMoveConfirmed(false);
     setPricePreviewInvalidationKey((value) => value + 1);
     setPricePreviewLoading(step >= 2 && step <= 4);
     setPricePreviewError("");
@@ -5991,7 +5751,7 @@ export function InstantQuotePage() {
   }, [invalidatePricedResults]);
 
   const setItemQuantity = (item: InventoryListItem, delta: number, room: RoomValue = activeRoom) => {
-    const itemId = item.pricingItemId;
+    const itemId = item.id;
     invalidatePricedResults();
     setItems((prev) => {
       const existing = prev.find((line) => line.itemId === itemId && line.room === room);
@@ -6027,9 +5787,13 @@ export function InstantQuotePage() {
 
   const validateStep = () => {
     if (step === 0) {
-      if (!collection.address || !collection.propertyType) return "Enter the collection address and property type.";
-      if (!delivery.address || !delivery.propertyType) return "Enter the delivery address and property type.";
-      if (!moveDate && !flexibleDate) return "Choose a move date or tick that you do not have a date yet.";
+      if (!collection.address) return "Enter the collection address.";
+      if (!collection.propertyType || !moveSize) return "Choose the collection property size.";
+      if (!delivery.address) return "Enter the delivery address.";
+      if (!delivery.propertyType) return "Choose the delivery property size.";
+    }
+    if (items.length > 0 && selectedInventoryPayload.length === 0) {
+      return "Inventory is temporarily unavailable. Please try again shortly.";
     }
     if (step === 1 && selectedUnits === 0) return "Add at least one inventory item or custom item.";
     if (step === 2) {
@@ -6039,9 +5803,10 @@ export function InstantQuotePage() {
   };
 
   const validateQuoteReady = () => {
-    if (!collection.address || !collection.propertyType) return "Enter the collection address and property type.";
-    if (!delivery.address || !delivery.propertyType) return "Enter the delivery address and property type.";
+    if (!collection.address || !collection.propertyType || !moveSize) return "Enter the collection address and property size.";
+    if (!delivery.address || !delivery.propertyType) return "Enter the delivery address and property size.";
     if (hasAdditionalStop && (!additionalStop.address || !additionalStop.propertyType)) return "Enter the additional stop address and property type.";
+    if (items.length > 0 && selectedInventoryPayload.length === 0) return "Inventory is temporarily unavailable. Please try again shortly.";
     if (selectedUnits === 0) return "Add at least one inventory item or custom item.";
     if (!moveDate && !flexibleDate) return "Choose a move date or mark the date as flexible.";
     if (!customer.fullName.trim() || !isValidEmail(customer.email) || !isValidUkPhone(customer.phone)) return "Enter your name, email, and UK phone number.";
@@ -6156,7 +5921,7 @@ export function InstantQuotePage() {
       idempotencyKey,
       reference: clientQuoteReference || undefined,
       moveType,
-      moveSize,
+      moveSize: quoteMoveSize,
       collection: collectionPayload,
       delivery: deliveryPayload,
       additionalStop: hasAdditionalStop ? accessPayload(additionalStop) : null,
@@ -6192,9 +5957,9 @@ export function InstantQuotePage() {
     latestDate,
     minDate,
     moveDate,
-    moveSize,
     moveType,
     promotionCode,
+    quoteMoveSize,
     quoteCustomerPayload,
     selectedCustomItemPayload,
     selectedInventoryPayload,
@@ -6204,27 +5969,42 @@ export function InstantQuotePage() {
   ]);
 
   const startStripeCheckout = async (quoteReference: string) => {
+    if (paymentRedirectingRef.current) return;
+    paymentRedirectingRef.current = true;
     setPaymentRedirecting(true);
     setPaymentError("");
     const idempotencyKey = randomKey("checkout");
-    const response = await fetch("/api/booking/checkout-session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ quoteReference, idempotencyKey }),
-    });
-    const data = await response.json().catch(() => null) as { url?: string; error?: string } | null;
-    if (!response.ok || !data?.url) {
+    try {
+      const response = await fetch("/api/booking/checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quoteReference, idempotencyKey }),
+      });
+      const data = await response.json().catch(() => null) as { url?: string; error?: string } | null;
+      if (!response.ok || !data?.url) {
+        paymentRedirectingRef.current = false;
+        setPaymentRedirecting(false);
+        const message = data?.error ?? "Unable to open Stripe checkout.";
+        setPaymentError(message);
+        throw new Error(message);
+      }
+      void recordQuoteEvent({
+        reference: quoteReference,
+        type: "stripe_checkout_started",
+        metadata: { sourceChannel: "instant_quote_page" },
+      });
+      window.location.assign(data.url);
+    } catch (error) {
+      paymentRedirectingRef.current = false;
       setPaymentRedirecting(false);
-      const message = data?.error ?? "Unable to open Stripe checkout.";
+      if (error instanceof Error && error.message) {
+        setPaymentError(error.message);
+        throw error;
+      }
+      const message = "Unable to open Stripe checkout.";
       setPaymentError(message);
       throw new Error(message);
     }
-    void recordQuoteEvent({
-      reference: quoteReference,
-      type: "stripe_checkout_started",
-      metadata: { sourceChannel: "instant_quote_page" },
-    });
-    window.location.assign(data.url);
   };
 
   const completeLocalPreviewBooking = () => {
@@ -6241,11 +6021,11 @@ export function InstantQuotePage() {
   };
 
   const buildLocalPreviewQuote = (preview: QuotePricePreview): QuoteResponse | null => {
-    if (preview.status !== "FIXED" || typeof preview.totalPence !== "number") return null;
+    if (preview.status !== "AUTO_QUOTE" || typeof preview.totalPence !== "number") return null;
     const movers = preview.crew?.movers ?? selectedMoverCount;
     return {
       reference: `LOCAL-${Date.now().toString(36).toUpperCase()}`,
-      status: "FIXED",
+      status: "AUTO_QUOTE",
       pricingVersion: null,
       pricingAlgorithmVersion: preview.pricingAlgorithmVersion ?? null,
       competitorBenchmarkId: preview.competitorBenchmarkId ?? null,
@@ -6347,7 +6127,7 @@ export function InstantQuotePage() {
       quoteSubmitKeyRef.current = null;
       setQuote(data.quote);
       setStep(STEPS.length - 1);
-      if (startCheckout && data.quote.status === "FIXED") {
+      if (startCheckout && data.quote.status === "AUTO_QUOTE") {
         await startStripeCheckout(data.quote.reference);
       }
     } catch (caught) {
@@ -6412,15 +6192,24 @@ export function InstantQuotePage() {
   );
   const selectedServerTotalPence =
     !selectedServerCrewInvalid &&
-    selectedServerPreview?.status === "FIXED" &&
+    selectedServerPreview?.status === "AUTO_QUOTE" &&
     typeof selectedServerPreview.totalPence === "number"
       ? selectedServerPreview.totalPence
       : undefined;
   const serverComparisonPrices = useMemo(() => getFixedPreviewPrices(scopedPricePreviews), [scopedPricePreviews]);
   const selectedServerPriceTone = priceToneForTotal(selectedServerTotalPence, serverComparisonPrices);
+  const pricedMoveSize = isMoveSize(selectedServerPreview?.canonicalPropertySize)
+    ? selectedServerPreview.canonicalPropertySize
+    : quoteMoveSize;
+  const showPartialMoveConfirmation = Boolean(
+    selectedServerPreview?.resolvedMoveScope === "PARTIAL_PROPERTY_MOVE" &&
+    selectedServerPreview.moveScopeConfirmationRecommended !== false &&
+    !partialMoveConfirmed
+  );
+  const partialMoveConfirmationText = `You selected a ${collection.propertyType || "property"}, but the inventory looks like a partial move. Are you moving only the listed items?`;
 
   useEffect(() => {
-    if (step < 2 || step > 4 || selectedServerPreview?.status !== "FIXED") return;
+    if (step < 2 || step > 4 || selectedServerPreview?.status !== "AUTO_QUOTE") return;
     const requiredCrew = selectedServerPreview.requiredCrew ?? selectedServerPreview.crew?.movers ?? null;
     if ((requiredCrew === 1 || requiredCrew === 2) && requiredCrew > selectedMoverCount) {
       setSelectedMoverCount(requiredCrew);
@@ -6434,19 +6223,20 @@ export function InstantQuotePage() {
   const isInventoryStep = !bookingRef && step === 1;
   const isPriceOptionsStep = !bookingRef && step === 2;
   const isAddOnsStep = !bookingRef && step === 3;
-  const isDetailsStep = !bookingRef && step === 4 && quote?.status !== "FIXED";
+  const isDetailsStep = !bookingRef && step === 4 && quote?.status !== "AUTO_QUOTE";
   const isWideBookingStep = isFirstQuoteStep || isInventoryStep || isPriceOptionsStep || isAddOnsStep || isDetailsStep;
   const collectionHeroPropertyValue = normaliseHeroProperty(collection.propertyType);
   const deliveryHeroPropertyValue = normaliseHeroProperty(delivery.propertyType);
-  const selectCollectionProperty = (option: (typeof HERO_PROPERTY_OPTIONS)[number]) => {
+  const selectCollectionProperty = (option: HeroPropertyOption) => {
     invalidatePricedResults();
-    setCollection((prev) => ({ ...prev, propertyType: option.value }));
-    setMoveType("house-move");
+    setCollection((prev) => ({ ...prev, ...accessPatchForProperty(option) }));
+    setMoveType(moveTypeForPropertySelection(option.value, delivery.propertyType));
     setMoveSize(option.moveSize);
   };
-  const selectDeliveryProperty = (option: (typeof HERO_PROPERTY_OPTIONS)[number]) => {
+  const selectDeliveryProperty = (option: HeroPropertyOption) => {
     invalidatePricedResults();
-    setDelivery((prev) => ({ ...prev, propertyType: option.value }));
+    setDelivery((prev) => ({ ...prev, ...accessPatchForProperty(option) }));
+    setMoveType(moveTypeForPropertySelection(collection.propertyType, option.value));
   };
   const showProgressHeader = false;
   const selectPriceDate = (date: string, options?: { advance?: boolean }) => {
@@ -6912,31 +6702,9 @@ export function InstantQuotePage() {
                     />
                   </Box>
                 </SimpleGrid>
-                <Box>
-                  <HeroSectionHeader>When are you moving?</HeroSectionHeader>
-                  <Box mt={2} maxW={{ base: "full", md: "360px" }}>
-                    <MoveDateBlock
-                      moveDate={moveDate}
-                      flexibleDate={flexibleDate}
-                      minDate={minDate}
-                      onDateChange={(date) => {
-                        invalidatePricedResults();
-                        setMoveDate(date);
-                        setFlexibleDate(false);
-                        setEarliestDate("");
-                        setLatestDate("");
-                      }}
-                      onFlexibleChange={(value) => {
-                        invalidatePricedResults();
-                        setFlexibleDate(value);
-                        if (value) setMoveDate("");
-                      }}
-                    />
-                  </Box>
-                </Box>
                 <Flex direction={{ base: "column", md: "row" }} align={{ base: "stretch", md: "end" }} justify="space-between" gap={4}>
                   <HStack gap={4} flexWrap="wrap" align="end">
-                    <TrustpilotBadge />
+                    <GoogleRatingBadge />
                     <Box asChild color={bookingTheme.heroBlue} textDecoration="none" fontWeight={800} fontSize="sm" _hover={{ color: "#0B4ED8", textDecoration: "underline" }}>
                       <Link href="/booking/track">Already received a quote?</Link>
                     </Box>
@@ -7107,13 +6875,21 @@ export function InstantQuotePage() {
                           <Spinner size="sm" color={bookingTheme.heroBlue} />
                           <Text color={bookingTheme.muted}>Loading inventory...</Text>
                         </HStack>
+                      ) : itemsError ? (
+                        <VStack minH="320px" justify="center" gap={3} px={4} textAlign="center">
+                          <FiAlertTriangle size={28} color={bookingTheme.danger} />
+                          <Box>
+                            <Text fontWeight={900} color={bookingTheme.ink}>Inventory unavailable</Text>
+                            <Text mt={1} fontSize="sm" color={bookingTheme.muted}>{itemsError}</Text>
+                          </Box>
+                        </VStack>
                       ) : (
                         <Box>
                           {visibleItems.map((item) => {
-                            const quantity = items.find((line) => line.itemId === item.pricingItemId && line.room === activeRoom)?.quantity ?? 0;
+                            const quantity = items.find((line) => line.itemId === item.id && line.room === activeRoom)?.quantity ?? 0;
                             return (
                               <InventoryItemRow
-                                key={`${activeRoom}-${item.pricingItemId}-${item.displayName}`}
+                                key={`${activeRoom}-${item.id}-${item.displayName}`}
                                 item={item}
                                 quantity={quantity}
                                 onAdd={() => setItemQuantity(item, 1, activeRoom)}
@@ -7223,7 +6999,7 @@ export function InstantQuotePage() {
             {step === 2 && (
               <PriceOptionsStep
                 selectedUnits={selectedUnits}
-                moveSize={moveSize}
+                moveSize={pricedMoveSize}
                 collection={collection}
                 delivery={delivery}
                 items={items}
@@ -7239,9 +7015,11 @@ export function InstantQuotePage() {
                 failedPreviewDates={failedPreviewDates}
                 pricePreviewLoading={pricePreviewLoading}
                 pricePreviewError={pricePreviewError}
+                partialMoveConfirmationText={showPartialMoveConfirmation ? partialMoveConfirmationText : undefined}
                 services={services}
                 dismantleCount={dismantleCount}
                 assemblyCount={assemblyCount}
+                onConfirmPartialMove={() => setPartialMoveConfirmed(true)}
                 onMoverChange={(value) => {
                   quoteRequestRef.current += 1;
                   quoteSubmitKeyRef.current = null;
@@ -7265,7 +7043,7 @@ export function InstantQuotePage() {
             {step === 3 && (
               <AdditionalServicesStep
                 selectedUnits={selectedUnits}
-                moveSize={moveSize}
+                moveSize={pricedMoveSize}
                 collection={collection}
                 delivery={delivery}
                 items={items}
@@ -7299,10 +7077,10 @@ export function InstantQuotePage() {
 
             {step === 4 && (
               <>
-                {quote?.status !== "FIXED" ? (
+                {quote?.status !== "AUTO_QUOTE" ? (
                   <ConfirmDetailsStep
                     selectedUnits={selectedUnits}
-                    moveSize={moveSize}
+                    moveSize={pricedMoveSize}
                     collection={collection}
                     delivery={delivery}
                     items={items}
@@ -7335,7 +7113,7 @@ export function InstantQuotePage() {
                   />
                 ) : (
                   <StepShell
-                    title={quote.status === "FIXED" ? "Your fixed quote" : "Manual review required"}
+                    title={quote.status === "AUTO_QUOTE" ? "Your fixed quote" : "Manual review required"}
                     subtitle={quote.reference.startsWith("LOCAL-") ? "Instant fixed price" : `Quote reference ${quote.reference}`}
                   >
                     {(() => {
@@ -7362,7 +7140,7 @@ export function InstantQuotePage() {
                       Back
                     </Box>
                   <VStack align="start" gap={4} w="full">
-                    {quote.status === "FIXED" ? (
+                    {quote.status === "AUTO_QUOTE" ? (
                       <Box w="full" p={5} borderRadius="lg" border={`1px solid ${bookingTheme.primary}`} bg={bookingTheme.primarySoft}>
                         {quote.discountTotalPence > 0 && quote.originalTotalPence && (
                           <Text fontSize="sm" color={bookingTheme.muted} textDecoration="line-through">
@@ -7395,7 +7173,7 @@ export function InstantQuotePage() {
                         </Text>
                       </Box>
                     )}
-                    {quote.status === "FIXED" && localPreviewQuote && (
+                    {quote.status === "AUTO_QUOTE" && localPreviewQuote && (
                       <LocalPreviewNextPanel
                         totalPence={quote.totalPence ?? 0}
                         error={paymentError}
@@ -7409,7 +7187,7 @@ export function InstantQuotePage() {
                       <SummaryCell label="Crew" value={`${quote.crew.movers || 0} mover${quote.crew.movers === 1 ? "" : "s"}`} />
                       <SummaryCell label="Duration" value={quote.estimatedDurationMinutes == null ? "Review" : `${Math.round(quote.estimatedDurationMinutes / 60 * 10) / 10} hrs`} />
                     </SimpleGrid>
-                    {quote.status === "FIXED" && (
+                    {quote.status === "AUTO_QUOTE" && (
                       <Box w="full">
                         <Text fontSize="sm" fontWeight={900} mb={2}>Customer summary</Text>
                         <VStack gap={2} align="stretch">
@@ -7422,14 +7200,14 @@ export function InstantQuotePage() {
                         </VStack>
                       </Box>
                     )}
-                    {quote.status === "FIXED" && (
+                    {quote.status === "AUTO_QUOTE" && (
                       <SelectedItemsSummary
                         items={items}
                         customItems={customItems}
                         onEdit={() => goToStep(1)}
                       />
                     )}
-                    {quote.status === "FIXED" && !localPreviewQuote && (
+                    {quote.status === "AUTO_QUOTE" && !localPreviewQuote && (
                       <StripeRedirectPanel
                         quote={quote}
                         busy={paymentRedirecting}

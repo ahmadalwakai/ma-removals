@@ -31,7 +31,6 @@ function clearPricing() {
     priceBreakdown: null,
     selectedPrice: null,
     selectedTimeSlot: null,
-    priceIntentSecret: null,
   };
 }
 

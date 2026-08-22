@@ -1,5 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import Stripe from "stripe";
+import { db } from "@/lib/db";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "");
 
@@ -10,41 +14,40 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ["payment_intent"],
-    });
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
     const quoteReference = session.metadata?.quoteReference;
-    const paymentIntent = session.payment_intent;
-    const paymentIntentId = typeof paymentIntent === "string" ? paymentIntent : paymentIntent?.id;
-    const email = session.customer_details?.email ?? session.customer_email ?? "";
-
-    if (!quoteReference || !paymentIntentId) {
+    if (!quoteReference) {
       return NextResponse.redirect(new URL("/book?payment=invalid_session", req.url));
     }
-    if (session.payment_status !== "paid") {
-      return NextResponse.redirect(new URL(`/book?payment=not_paid&quote=${encodeURIComponent(quoteReference)}`, req.url));
-    }
 
-    const response = await fetch(new URL("/api/booking/confirm", req.url), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        quoteReference,
-        paymentIntentId,
-        idempotencyKey: `checkout:${session.id.slice(-48)}`,
-      }),
+    const quote = await db.quote.findUnique({
+      where: { reference: quoteReference },
+      select: {
+        status: true,
+        booking: { select: { reference: true } },
+      },
     });
-    const data = await response.json().catch(() => null) as { bookingRef?: string; error?: string } | null;
-    if (!response.ok || !data?.bookingRef) {
-      return NextResponse.redirect(new URL(`/book?payment=confirmation_failed&quote=${encodeURIComponent(quoteReference)}`, req.url));
+
+    if (quote?.booking) {
+      const thankYouUrl = new URL("/thank-you-ma-removals-quote", req.url);
+      thankYouUrl.searchParams.set("reference", quote.booking.reference);
+      return NextResponse.redirect(thankYouUrl);
     }
 
-    void email;
-    const thankYouUrl = new URL("/thank-you-ma-removals-quote", req.url);
-    thankYouUrl.searchParams.set("reference", data.bookingRef);
-    return NextResponse.redirect(thankYouUrl);
+    const bookUrl = new URL("/book", req.url);
+    bookUrl.searchParams.set("quote", quoteReference);
+    if (session.payment_status === "paid") {
+      bookUrl.searchParams.set("payment", "processing");
+    } else if (session.status === "expired") {
+      bookUrl.searchParams.set("payment", "expired");
+    } else if (session.payment_status === "unpaid") {
+      bookUrl.searchParams.set("payment", "not_paid");
+    } else {
+      bookUrl.searchParams.set("payment", "processing");
+    }
+    return NextResponse.redirect(bookUrl);
   } catch (error) {
-    console.error("Stripe checkout completion failed:", error);
+    console.error("Stripe checkout completion lookup failed:", error);
     return NextResponse.redirect(new URL("/book?payment=error", req.url));
   }
 }

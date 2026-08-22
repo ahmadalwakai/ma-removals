@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
 import {
-  FiGrid, FiCalendar, FiUsers, FiDollarSign, FiClipboard,
+  FiGrid, FiCalendar, FiUsers, FiClipboard,
   FiEdit, FiBarChart2, FiSettings, FiLogOut, FiMenu, FiX, FiEye,
   FiFileText,
 } from "react-icons/fi";
@@ -16,7 +16,6 @@ const NAV = [
   { label: "Bookings",          href: "/admin/bookings",  icon: FiCalendar },
   { label: "Quote Review",      href: "/admin/quotes",    icon: FiFileText },
   { label: "Drivers",           href: "/admin/drivers",   icon: FiUsers },
-  { label: "Pricing",           href: "/admin/pricing",   icon: FiDollarSign },
   { label: "Job Board Control", href: "/admin/jobs",      icon: FiClipboard },
   { label: "Site Content",      href: "/admin/content",   icon: FiEdit },
   { label: "Analytics",         href: "/admin/analytics", icon: FiBarChart2 },

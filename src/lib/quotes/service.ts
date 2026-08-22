@@ -15,11 +15,15 @@ export class QuoteInputError extends Error {
 
 export interface CustomerQuoteResponse {
   reference: string;
-  status: "FIXED" | "MANUAL_REVIEW" | "ACCEPTED" | "EXPIRED" | "REJECTED";
+  status: "AUTO_QUOTE" | "FIXED" | "MANUAL_REVIEW" | "ACCEPTED" | "EXPIRED" | "REJECTED";
   pricingVersion: number | null;
   pricingAlgorithmVersion: string | null;
   competitorBenchmarkId: string | null;
   benchmarkPricePence: number | null;
+  marketBenchmarkPence: number | null;
+  marketTargetPence: number | null;
+  costFloorPence: number | null;
+  finalPricePence: number | null;
   serverInputHash: string | null;
   totalPence: number | null;
   originalTotalPence: number | null;
@@ -152,9 +156,60 @@ function toNullableJsonValue(value: unknown): Prisma.InputJsonValue | typeof Pri
   return value === null || value === undefined ? Prisma.JsonNull : toJsonValue(value);
 }
 
+function normalisedAccessStop(
+  role: "collection" | "delivery" | "additional-stop",
+  access: CreateQuoteRequest["collection"]
+) {
+  return {
+    role,
+    access: {
+      fullAddress: access.fullAddress,
+      postcode: access.postcode,
+      lat: access.lat,
+      lng: access.lng,
+      floor: access.floor,
+      hasLift: access.hasLift,
+      accessRestrictions: access.accessRestrictions,
+      notes: access.notes,
+    },
+  };
+}
+
+function buildNormalisedBookingInput(
+  input: CreateQuoteRequest,
+  pricing: Awaited<ReturnType<typeof calculateCanonicalQuotePricing>>,
+  accessDetails: unknown,
+  inventorySnapshot: unknown
+) {
+  return {
+    pricingAlgorithmVersion: PRICING_ALGORITHM_VERSION,
+    serverInputHash: pricing.serverInputHash ?? null,
+    canonicalPricingInput: pricing.canonicalInput ?? null,
+    moveType: input.moveType,
+    moveSize: input.moveSize ?? null,
+    moveDate: input.moveDate ?? null,
+    arrivalWindow: input.arrivalWindow ?? null,
+    customerNote: input.customer.notes ?? "",
+    stops: [
+      normalisedAccessStop("collection", input.collection),
+      ...(input.additionalStop ? [normalisedAccessStop("additional-stop", input.additionalStop)] : []),
+      normalisedAccessStop("delivery", input.delivery),
+    ],
+    inventory: pricing.inventory.lines.map((item) => ({
+      itemId: item.itemId,
+      quantity: item.quantity,
+      room: item.room ?? "other",
+    })),
+    services: input.services,
+    accessDetails,
+    inventorySnapshot,
+  };
+}
+
 function responseStatus(status: string): CustomerQuoteResponse["status"] {
+  if (status === "FIXED") return "AUTO_QUOTE";
   if (
-    status === "FIXED" ||
+    status === "AUTO_QUOTE" ||
     status === "MANUAL_REVIEW" ||
     status === "ACCEPTED" ||
     status === "EXPIRED" ||
@@ -171,7 +226,11 @@ function responseFromQuote(quote: StoredQuoteForResponse): CustomerQuoteResponse
     : null;
   const competitorSnapshot = asRecord(quote.competitorSnapshot);
   const benchmarkSnapshot = asRecord(competitorSnapshot?.benchmark);
-  const benchmarkPricePence = asNumber(benchmarkSnapshot?.benchmarkPricePence);
+  const benchmarkPricePence =
+    asNumber(competitorSnapshot?.marketBenchmarkPence) ??
+    asNumber(benchmarkSnapshot?.benchmarkPricePence);
+  const marketTargetPence = asNumber(competitorSnapshot?.marketTargetPence);
+  const costFloorPence = asNumber(competitorSnapshot?.costFloorPence);
   const vehicleRecommendation = asRecord(quote.vehicleRecommendation);
   const crewRecommendation = asRecord(quote.crewRecommendation);
   const inventorySnapshot = asRecord(quote.inventorySnapshot);
@@ -193,11 +252,15 @@ function responseFromQuote(quote: StoredQuoteForResponse): CustomerQuoteResponse
     pricingAlgorithmVersion: asString(competitorSnapshot?.pricingAlgorithmVersion),
     competitorBenchmarkId: quote.competitorBenchmarkId ?? null,
     benchmarkPricePence,
+    marketBenchmarkPence: benchmarkPricePence,
+    marketTargetPence,
+    costFloorPence,
+    finalPricePence: quote.finalTotalPence ?? null,
     serverInputHash: quote.serverInputHash ?? null,
     totalPence: quote.finalTotalPence ?? null,
     originalTotalPence: quote.originalTotalPence ?? quote.finalTotalPence ?? null,
     discountTotalPence: quote.discountTotalPence ?? 0,
-    savingPercent: typeof quote.finalTotalPence === "number" && typeof benchmarkPricePence === "number" && benchmarkPricePence > 0
+    savingPercent: quote.competitorBenchmarkId && typeof quote.finalTotalPence === "number" && typeof benchmarkPricePence === "number" && benchmarkPricePence > 0
       ? Math.max(0, Math.round(((benchmarkPricePence - quote.finalTotalPence) / benchmarkPricePence) * 100))
       : null,
     explanation: asString(competitorSnapshot?.explanation),
@@ -301,19 +364,17 @@ export async function createQuote(
     metricDatasetVersion: pricing.auditSnapshot?.itemMetricDatasetVersion ?? PRICING_ALGORITHM_VERSION,
     referenceProfile: pricing.auditSnapshot?.referenceProfile ?? null,
     lutonCapacityReference: pricing.auditSnapshot?.lutonCapacityReference ?? null,
+    resolvedMoveScope: pricing.resolvedMoveScope,
+    moveScopeConfidence: pricing.moveScopeConfidence,
+    moveScopeReasonCodes: pricing.moveScopeReasonCodes,
+    inventoryFacts: pricing.inventoryFacts,
+    resourcePlan: pricing.resourcePlan ?? null,
     normalizedItems: pricing.canonicalInput?.inventory ?? [],
     selectedItems: pricing.inventory.lines,
     customItems: input.customItems,
     summary: pricing.inventory.summary,
   };
-  const normalisedInput = pricing.canonicalInput ?? {
-    pricingAlgorithmVersion: PRICING_ALGORITHM_VERSION,
-    moveType: input.moveType,
-    moveSize: input.moveSize ?? null,
-    accessDetails,
-    inventorySnapshot,
-    services: input.services,
-  };
+  const normalisedInput = buildNormalisedBookingInput(input, pricing, accessDetails, inventorySnapshot);
   const serverInputHash = pricing.serverInputHash ?? stableHash(normalisedInput);
   const totalHandlingMinutes = pricing.inventory.summary.totalHandlingMinutes ?? 0;
   const loadingMinutes = Math.ceil(totalHandlingMinutes / 2);
@@ -331,11 +392,13 @@ export async function createQuote(
     explanation: pricing.explanation,
   };
   const manualReviewReasons = pricing.status === "MANUAL_REVIEW" ? pricing.reasonCodes : [];
+  const isAutoQuote = pricing.status === "AUTO_QUOTE";
+  const persistedQuoteStatus = isAutoQuote ? "FIXED" : pricing.status;
 
   const quote = await dbClient.quote.create({
     data: {
       reference,
-      status: pricing.status,
+      status: persistedQuoteStatus,
       moveType: input.moveType,
       moveSize: input.moveSize ?? null,
       moveDate: parseMoveDate(input),
@@ -360,23 +423,31 @@ export async function createQuote(
       inventorySnapshot: toJsonValue(inventorySnapshot),
       accessDetails: toJsonValue(accessDetails),
       selectedServices: toJsonValue(input.services),
-      vehicleRecommendation: Prisma.JsonNull,
+      vehicleRecommendation: pricing.resourcePlan
+        ? toJsonValue({
+            name: pricing.resourcePlan.vehicle.name,
+            multipleVehiclesRequired: false,
+            multipleTripsLikely: pricing.resourcePlan.vehicle.multipleTripsLikely,
+            loadRatioBps: pricing.resourcePlan.vehicle.loadRatioBps,
+            trips: pricing.resourcePlan.vehicle.trips,
+          })
+        : Prisma.JsonNull,
       crewRecommendation: toJsonValue(crewRecommendation),
       estimatedDurationMinutes: pricing.routeMetrics?.durationMinutes ?? null,
-      customerBreakdown: pricing.status === "FIXED" ? toJsonValue(pricing.breakdown) : [],
+      customerBreakdown: isAutoQuote ? toJsonValue(pricing.breakdown) : [],
       internalBreakdown: toJsonValue(pricing.auditSnapshot ?? {}),
       promotionSnapshot: Prisma.JsonNull,
       competitorSnapshot: toJsonValue(competitorSnapshot),
       flexibilitySnapshot: Prisma.JsonNull,
       experimentAssignment: Prisma.JsonNull,
-      preDiscountTotalPence: pricing.status === "FIXED" ? pricing.totalPence : null,
-      originalTotalPence: pricing.status === "FIXED" ? pricing.totalPence : null,
+      preDiscountTotalPence: isAutoQuote ? pricing.finalPricePence : null,
+      originalTotalPence: isAutoQuote ? pricing.finalPricePence : null,
       discountTotalPence: 0,
-      roundingAdjustmentPence: pricing.status === "FIXED" ? 0 : null,
-      finalTotalPence: pricing.status === "FIXED" ? pricing.totalPence : null,
-      contributionPence: null,
-      grossMarginPercentage: null,
-      competitorBenchmarkId: pricing.status === "FIXED" ? pricing.competitorBenchmarkId : null,
+      roundingAdjustmentPence: isAutoQuote ? pricing.finalPricePence - pricing.marketTargetPence : null,
+      finalTotalPence: isAutoQuote ? pricing.finalPricePence : null,
+      contributionPence: isAutoQuote ? pricing.contributionPence : null,
+      grossMarginPercentage: isAutoQuote ? pricing.contributionMargin : null,
+      competitorBenchmarkId: isAutoQuote ? pricing.competitorBenchmarkId : null,
       beatCompetitorCampaignId: null,
       manualReviewReasons,
       serverInputHash,

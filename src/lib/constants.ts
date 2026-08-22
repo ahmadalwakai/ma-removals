@@ -104,7 +104,7 @@ export const ALL_AREAS: { name: string; slug: string; region: Region }[] =
 export const FAQS = [
   {
     q: "How much does a removal cost in Scotland?",
-    a: "Prices start from £45 for small moves and from about £264 for home moves. When a matching AnyVan benchmark is available, our instant quote is capped at 10% below it; otherwise the price is calculated from your items, access and mileage. Use our online calculator for an instant fixed quote — no hidden fees.",
+    a: "Prices start from £45 for small moves and from about £264 for home moves. Your instant quote is calculated from your route, inventory, access and selected services. Verified competitor savings are shown only when a like-for-like benchmark is available.",
   },
   {
     q: "Are you fully insured?",

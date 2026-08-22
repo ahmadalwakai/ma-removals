@@ -1,1 +1,1 @@
-export const PRICING_ALGORITHM_VERSION = "dynamic-inventory-pricing-v3";
+export const PRICING_ALGORITHM_VERSION = "market-target-cost-floor-v1";

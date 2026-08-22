@@ -9,7 +9,6 @@ const TITLES: Record<string, string> = {
   "/admin":            "Dashboard",
   "/admin/bookings":   "Bookings",
   "/admin/drivers":    "Drivers",
-  "/admin/pricing":    "Pricing",
   "/admin/jobs":       "Job Board Control",
   "/admin/content":    "Site Content",
   "/admin/analytics":  "Analytics",

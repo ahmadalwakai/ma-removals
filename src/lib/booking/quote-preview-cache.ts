@@ -7,7 +7,7 @@ import { ITEM_METRICS_DATASET_VERSION } from "@/lib/items/item-metrics-version";
 import { PRICING_ALGORITHM_VERSION } from "@/lib/quotes/pricing-version";
 
 export const PRICE_PREVIEW_MAX_QUOTES_PER_REQUEST = 32;
-export const PRICE_PREVIEW_SCOPE_VERSION = "quote-preview-scope-v2";
+export const PRICE_PREVIEW_SCOPE_VERSION = "quote-preview-scope-v3";
 
 export interface PricePreviewScopeInput {
   inventory: readonly CanonicalInventoryInputLine[];
@@ -18,6 +18,17 @@ export interface PricePreviewScopeInput {
   packingIncluded: boolean;
   serviceLevel: string;
   crew: number | readonly number[];
+  pickupWindow?: string | null;
+  urgency?: string | null;
+  dayType?: string | null;
+  waitingMinutes?: number | null;
+  dateFlexibility?: {
+    flexibleDate?: boolean;
+    flexibleTime?: boolean;
+    exactTime?: boolean;
+    earliestDate?: string | null;
+    latestDate?: string | null;
+  };
   pickup: unknown;
   destination: unknown;
   additionalStop?: unknown;
@@ -81,11 +92,13 @@ export function buildPricePreviewScopeKey(input: PricePreviewScopeInput): string
     pricingAlgorithmVersion: input.pricingAlgorithmVersion ?? PRICING_ALGORITHM_VERSION,
     itemMetricDatasetVersion,
     inventorySignature: normalizedInventory
-      .map((item) => `${item.itemId}:${item.quantity}:${item.itemMetricVersion}`)
+      .map((item) => `${item.itemId}:${item.room ?? ""}:${item.quantity}:${item.itemMetricVersion}`)
       .join("|"),
     inventory: normalizedInventory,
     itemIds: normalizedInventory.map((item) => item.itemId),
-    itemQuantities: Object.fromEntries(normalizedInventory.map((item) => [item.itemId, item.quantity])),
+    itemQuantities: Object.fromEntries(
+      normalizedInventory.map((item) => [`${item.itemId}:${item.room ?? ""}`, item.quantity])
+    ),
     customInventory,
     moveType: input.moveType,
     pricingClassification: input.pricingClassification ?? null,
@@ -93,6 +106,11 @@ export function buildPricePreviewScopeKey(input: PricePreviewScopeInput): string
     packingIncluded: input.packingIncluded,
     serviceLevel: input.serviceLevel,
     crew: input.crew,
+    pickupWindow: input.pickupWindow ?? null,
+    urgency: input.urgency ?? null,
+    dayType: input.dayType ?? null,
+    waitingMinutes: input.waitingMinutes ?? null,
+    dateFlexibility: input.dateFlexibility ?? {},
     pickup: input.pickup,
     destination: input.destination,
     additionalStop: input.additionalStop ?? null,
@@ -191,9 +209,11 @@ export function canonicalBenchmarkSavingPercent(preview: {
   status?: string | null;
   totalPence?: number | null;
   benchmarkPricePence?: number | null;
+  competitorBenchmarkId?: string | null;
 } | null | undefined): number | null {
   if (
-    preview?.status !== "FIXED" ||
+    preview?.status !== "AUTO_QUOTE" ||
+    !preview.competitorBenchmarkId ||
     typeof preview.totalPence !== "number" ||
     typeof preview.benchmarkPricePence !== "number" ||
     !Number.isFinite(preview.totalPence) ||

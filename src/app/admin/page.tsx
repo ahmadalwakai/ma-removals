@@ -151,7 +151,6 @@ export default async function AdminDashboardPage() {
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           {[
             { label: "Add Driver",       href: "/admin/drivers" },
-            { label: "Adjust Pricing",   href: "/admin/pricing" },
             { label: "View Job Board",   href: "/admin/jobs" },
           ].map(({ label, href }) => (
             <Link key={href} href={href} style={{

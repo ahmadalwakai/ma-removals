@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { releaseQuotePromotionReservations } from "@/lib/pricing/promotion-redemptions";
 import { acceptQuoteRequestSchema } from "@/lib/quotes/schemas";
 
 export async function POST(
@@ -19,20 +18,13 @@ export async function POST(
     if (!quote) return NextResponse.json({ error: "Quote not found" }, { status: 404 });
     if (quote.status === "CONSUMED") return NextResponse.json({ error: "Quote has already been booked" }, { status: 409 });
     if (quote.status === "ACCEPTED") return NextResponse.json({ ok: true, reference: quote.reference });
-    if (quote.status !== "FIXED") {
-      return NextResponse.json({ error: "This quote requires manual review before booking" }, { status: 422 });
-    }
-    if (quote.finalTotalPence == null || quote.finalTotalPence <= 0) {
-      return NextResponse.json({ error: "Quote amount is unavailable" }, { status: 422 });
+    if (quote.status === "MANUAL_REVIEW") {
+      return NextResponse.json({ error: "This quote requires team review before booking" }, { status: 422 });
     }
     if (quote.expiresAt.getTime() <= Date.now()) {
       await db.quote.update({
         where: { id: quote.id },
         data: { status: "EXPIRED" },
-      });
-      await releaseQuotePromotionReservations({
-        quoteId: quote.id,
-        reason: "quote_expired_on_accept",
       });
       return NextResponse.json({ error: "Quote has expired" }, { status: 410 });
     }

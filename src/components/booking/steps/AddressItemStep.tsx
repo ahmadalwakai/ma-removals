@@ -6,7 +6,7 @@ import { motion } from "framer-motion";
 import { HiSwitchVertical, HiOutlineLocationMarker, HiOutlineClock } from "react-icons/hi";
 import { FiCheck, FiPackage, FiTool } from "react-icons/fi";
 import { colors } from "@/lib/tokens";
-import { parseItemWeightKg } from "@/lib/item-pricing";
+import { parseItemWeightKg } from "@/lib/item-weight";
 import {
   isScotlandAddress,
   SCOTLAND_PICKUP_MESSAGE,
@@ -528,7 +528,6 @@ function clearPricing() {
     selectedPrice: null,
     selectedDate: null,
     selectedTimeSlot: null,
-    priceIntentSecret: null,
   };
 }
 

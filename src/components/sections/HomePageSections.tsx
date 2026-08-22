@@ -190,32 +190,24 @@ const RECENT_MOVES = [
     title: "Furniture move",
     from: "Glasgow",
     to: "Johnstone",
-    price: "£57",
-    saved: "beats AnyVan",
     image: "/images/items/Antiques_Collectibles/buffet_vintage_sideboard_jpg_85kg.jpg",
   },
   {
     title: "2-bed house move",
     from: "Paisley",
     to: "Edinburgh",
-    price: "£483",
-    saved: "10% lower",
     image: "/images/hero/hero-45.jpg",
   },
   {
     title: "Single item",
     from: "Dundee",
     to: "Perth",
-    price: "£72",
-    saved: "beats AnyVan",
     image: "/images/items/Living_room_Furniture/chesterfield_sofa_2_seat_antique_tan_jpg_55kg.jpg",
   },
   {
     title: "Student move",
     from: "Stirling",
     to: "Glasgow",
-    price: "£72",
-    saved: "10% lower",
     image: "/images/hero/hero-43.jpg",
   },
 ] as const;
@@ -356,15 +348,15 @@ export function HeroSection() {
                 flexWrap="wrap"
               >
                 <Text fontSize="sm" fontWeight={800} color="white">
-                  Trustpilot
+                  Google
                 </Text>
                 <HStack gap="2px">
                   {Array.from({ length: 5 }).map((_, i) => (
-                    <FaStar key={i} size={13} color="#00B67A" />
+                    <FaStar key={i} size={13} color={i < Math.round(SITE.maps.rating) ? "#FFB900" : "rgba(255,255,255,0.5)"} />
                   ))}
                 </HStack>
                 <Text fontSize="sm" fontWeight={700} color="white">
-                  4.5
+                  {SITE.maps.rating.toFixed(1)}
                 </Text>
               </HStack>
             </MotionBox>
@@ -440,34 +432,16 @@ function RecentMoveCard({ move }: { move: (typeof RECENT_MOVES)[number] }) {
           sizes="(max-width: 768px) 250px, 280px"
           style={{ objectFit: "cover" }}
         />
-        <Badge
-          position="absolute"
-          left={3}
-          top={3}
-          bg="#F5B018"
-          color="#111827"
-          borderRadius="full"
-          px={3}
-          py={1}
-          fontWeight={800}
-        >
-          {move.saved}
-        </Badge>
       </Box>
       <VStack align="stretch" gap={3} p={4}>
-        <Flex justify="space-between" align="start" gap={3}>
-          <VStack align="start" gap={0}>
-            <Text fontWeight={800} color="#13253A">
-              {move.title}
-            </Text>
-            <Text fontSize="sm" color={colors.muted}>
-              {move.from} to {move.to}
-            </Text>
-          </VStack>
-          <Text fontSize="2xl" fontWeight={900} color="#13253A" lineHeight={1}>
-            {move.price}
+        <VStack align="start" gap={0}>
+          <Text fontWeight={800} color="#13253A">
+            {move.title}
           </Text>
-        </Flex>
+          <Text fontSize="sm" color={colors.muted}>
+            {move.from} to {move.to}
+          </Text>
+        </VStack>
         <HStack gap={2} color="#2563EB" fontSize="sm" fontWeight={800}>
           <HiTruck size={17} />
           <Text>Recent completed move</Text>
@@ -490,10 +464,10 @@ export function TrustBar() {
         >
           <VStack align="start" gap={2}>
             <Heading as="h2" fontSize={{ base: "2xl", md: "4xl" }} color="#13253A" fontWeight={900} letterSpacing="0">
-              Recent moves, reviews and price wins!
+              Recent moves and reviews
             </Heading>
             <Text color={colors.muted} fontSize={{ base: "md", md: "lg" }}>
-              Real examples of local moves with simple, fixed online pricing.
+              Local move examples with simple, fixed online pricing.
             </Text>
           </VStack>
           <CTAButton href="/book" ctaVariant="primary" size="md" px={6}>
@@ -736,12 +710,12 @@ export function TestimonialsSection() {
           <HStack gap={2} mt={1}>
             <HStack gap={0.5}>
               {Array.from({ length: 5 }).map((_, i) => (
-                <FaStar key={i} size={16} color="#00B67A" />
+                <FaStar key={i} size={16} color={i < Math.round(SITE.maps.rating) ? "#FFB900" : "rgba(255,255,255,0.35)"} />
               ))}
             </HStack>
             <Text fontSize="sm" color="rgba(255,255,255,0.6)">
-              Rated <Text as="span" fontWeight={700} color="white">5.0</Text> on{" "}
-              <Text as="span" fontWeight={700} color="#00B67A">Trustpilot</Text>
+              Rated <Text as="span" fontWeight={700} color="white">{SITE.maps.rating.toFixed(1)}</Text> on{" "}
+              <Text as="span" fontWeight={700} color="#FFB900">Google</Text>
             </Text>
           </HStack>
         </VStack>

@@ -7,6 +7,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { getItemMetricBySlug } from "../src/lib/items/item-metrics";
 
 // ─── Prisma client (same pattern as src/lib/db.ts) ────────────────────────────
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL as string });
@@ -99,6 +100,7 @@ async function main() {
 
     const category = await db.itemCategory.create({
       data: {
+        id: categorySlug,
         name: config.name,
         slug: categorySlug,
         icon: config.icon,
@@ -128,16 +130,24 @@ async function main() {
 
       const imagePath = `/images/items/${folderName}/${fileName}`;
       const estimatedWeightKg = deriveItemWeightKg(fileName);
+      const itemMetric = getItemMetricBySlug(uniqueSlug);
 
       await db.item.create({
         data: {
+          id: uniqueSlug,
           name: rawName,
           slug: uniqueSlug,
           categoryId: category.id,
           imagePath,
           weight: config.weight,
           size: config.size,
-          estimatedWeightKg,
+          estimatedVolumeM3: itemMetric?.estimatedVolumeM3 ?? null,
+          estimatedWeightKg: itemMetric?.estimatedWeightKg ?? estimatedWeightKg,
+          handlingMinutes: itemMetric?.handlingMinutes ?? null,
+          requiresTwoPeople: itemMetric?.requiresTwoPeople ?? false,
+          heavy: itemMetric?.heavy ?? false,
+          specialist: itemMetric?.specialist ?? false,
+          minimumCrew: itemMetric?.minimumCrew ?? null,
           sortOrder: i,
           isActive: true,
         },
