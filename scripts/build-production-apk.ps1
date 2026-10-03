@@ -59,7 +59,7 @@ $robocopy = "C:\Windows\System32\robocopy.exe"
 if (-not (Test-Path -LiteralPath $robocopy)) {
   throw "robocopy.exe not found: $robocopy"
 }
-& $robocopy $projectRoot $BuildRoot /MIR /XD .git .expo .gradle .cxx /NFL /NDL /NJH /NJS /NP | Out-Null
+& $robocopy $projectRoot $BuildRoot /MIR /XD .git .expo .gradle .cxx node_modules /NFL /NDL /NJH /NJS /NP | Out-Null
 $robocopyExit = $LASTEXITCODE
 if ($robocopyExit -gt 7) {
   throw "robocopy failed with exit code $robocopyExit"

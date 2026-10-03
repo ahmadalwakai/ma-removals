@@ -1,109 +1,193 @@
 package com.maremovals.admin
 
+import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.os.Build
+import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 
-import com.facebook.react.ReactActivity
-import com.facebook.react.ReactActivityDelegate
-import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
-import com.facebook.react.defaults.DefaultReactActivityDelegate
+class MainActivity : Activity() {
+  private lateinit var webView: WebView
+  private lateinit var loadingView: View
+  private lateinit var errorView: View
 
-import com.maremovals.admin.fcm.KeepAliveService
-import com.maremovals.admin.fcm.Notifier
-
-import expo.modules.ReactActivityDelegateWrapper
-
-class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
-    // Set the theme to AppTheme BEFORE onCreate to support
-    // coloring the background, status bar, and navigation bar.
-    // This is required for expo-splash-screen.
-    setTheme(R.style.AppTheme);
-    super.onCreate(null)
-    captureDeeplinkExtra(intent)
+    super.onCreate(savedInstanceState)
+    window.statusBarColor = Color.parseColor("#F8FAFC")
+    window.navigationBarColor = Color.parseColor("#F8FAFC")
+
+    val root = FrameLayout(this).apply {
+      setBackgroundColor(Color.parseColor("#F8FAFC"))
+      layoutParams = FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+      )
+    }
+
+    webView = WebView(this).apply {
+      layoutParams = FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+      )
+      setBackgroundColor(Color.parseColor("#F8FAFC"))
+      settings.javaScriptEnabled = true
+      settings.domStorageEnabled = true
+      settings.databaseEnabled = true
+      settings.cacheMode = WebSettings.LOAD_DEFAULT
+      settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+      webChromeClient = WebChromeClient()
+      webViewClient = AdminWebViewClient()
+    }
+
+    loadingView = buildLoadingView()
+    errorView = buildErrorView().apply { visibility = View.GONE }
+
+    root.addView(webView)
+    root.addView(loadingView)
+    root.addView(errorView)
+    setContentView(root)
+
+    webView.loadUrl(ADMIN_URL)
   }
 
-  override fun onResume() {
-    super.onResume()
-    // Start the keep-alive foreground service here (not in
-    // Application.onCreate) so the app is genuinely in the foreground and the
-    // OS permits promoting a `remoteMessaging` foreground service. The service
-    // also guards startForeground() so it can never crash the app.
+  override fun onBackPressed() {
+    if (::webView.isInitialized && webView.canGoBack()) {
+      webView.goBack()
+      return
+    }
+    @Suppress("DEPRECATION")
+    super.onBackPressed()
+  }
+
+  override fun onDestroy() {
+    if (::webView.isInitialized) {
+      webView.stopLoading()
+      webView.destroy()
+    }
+    super.onDestroy()
+  }
+
+  private fun showLoading(show: Boolean) {
+    loadingView.visibility = if (show) View.VISIBLE else View.GONE
+  }
+
+  private fun showError(show: Boolean) {
+    errorView.visibility = if (show) View.VISIBLE else View.GONE
+    webView.visibility = if (show) View.GONE else View.VISIBLE
+  }
+
+  private fun buildLoadingView(): View {
+    return LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      gravity = Gravity.CENTER
+      setBackgroundColor(Color.parseColor("#F8FAFC"))
+      layoutParams = FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+      )
+      addView(ProgressBar(context).apply { isIndeterminate = true })
+      addView(TextView(context).apply {
+        text = "Opening M&A Admin"
+        textSize = 16f
+        setTextColor(Color.parseColor("#334155"))
+        gravity = Gravity.CENTER
+        setPadding(0, dp(14), 0, 0)
+      })
+    }
+  }
+
+  private fun buildErrorView(): View {
+    return LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      gravity = Gravity.CENTER
+      setPadding(dp(24), dp(24), dp(24), dp(24))
+      setBackgroundColor(Color.parseColor("#F8FAFC"))
+      layoutParams = FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+      )
+      addView(TextView(context).apply {
+        text = "M&A Admin could not open"
+        textSize = 22f
+        setTextColor(Color.parseColor("#0F172A"))
+        gravity = Gravity.CENTER
+      })
+      addView(TextView(context).apply {
+        text = "Check the phone connection, then try again."
+        textSize = 15f
+        setTextColor(Color.parseColor("#475569"))
+        gravity = Gravity.CENTER
+        setPadding(0, dp(10), 0, 0)
+      })
+      addView(Button(context).apply {
+        text = "Retry"
+        setTextColor(Color.WHITE)
+        setBackgroundColor(Color.parseColor("#2563EB"))
+        setPadding(dp(20), dp(10), dp(20), dp(10))
+        setOnClickListener {
+          showError(false)
+          showLoading(true)
+          webView.loadUrl(ADMIN_URL)
+        }
+      })
+    }
+  }
+
+  private fun openExternally(url: String) {
     try {
-      KeepAliveService.start(this)
-    } catch (_: Throwable) {
-      // Best-effort: FCM still works while the app is foreground.
+      startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    } catch (_: ActivityNotFoundException) {
+      // Ignore unsupported schemes instead of crashing the app.
     }
   }
 
-  override fun onNewIntent(intent: Intent) {
-    super.onNewIntent(intent)
-    setIntent(intent)
-    captureDeeplinkExtra(intent)
+  private fun dp(value: Int): Int {
+    return (value * resources.displayMetrics.density).toInt()
   }
 
-  private fun captureDeeplinkExtra(intent: Intent?) {
-    if (intent == null) return
-    val fromExtra = intent.getStringExtra(Notifier.EXTRA_DEEPLINK)
-    val fromData = intent.data?.let { uri ->
-      if (uri.scheme == "maremovalsadmin") uri.getQueryParameter("to") ?: uri.path else null
-    }
-    val deeplink = fromExtra ?: fromData
-    if (!deeplink.isNullOrBlank()) {
-      pendingDeeplink = deeplink
-    }
-  }
-
-  /**
-   * Returns the name of the main component registered from JavaScript. This is used to schedule
-   * rendering of the component.
-   */
-  override fun getMainComponentName(): String = "main"
-
-  /**
-   * Returns the instance of the [ReactActivityDelegate]. We use [DefaultReactActivityDelegate]
-   * which allows you to enable New Architecture with a single boolean flags [fabricEnabled]
-   */
-  override fun createReactActivityDelegate(): ReactActivityDelegate {
-    return ReactActivityDelegateWrapper(
-          this,
-          BuildConfig.IS_NEW_ARCHITECTURE_ENABLED,
-          object : DefaultReactActivityDelegate(
-              this,
-              mainComponentName,
-              fabricEnabled
-          ){})
-  }
-
-  /**
-    * Align the back button behavior with Android S
-    * where moving root activities to background instead of finishing activities.
-    * @see <a href="https://developer.android.com/reference/android/app/Activity#onBackPressed()">onBackPressed</a>
-    */
-  override fun invokeDefaultOnBackPressed() {
-      if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
-          if (!moveTaskToBack(false)) {
-              // For non-root activities, use the default implementation to finish them.
-              super.invokeDefaultOnBackPressed()
-          }
-          return
+  private inner class AdminWebViewClient : WebViewClient() {
+    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+      val uri = request.url
+      if (uri.scheme == "http" || uri.scheme == "https") {
+        val host = uri.host ?: return false
+        if (host == "maremovals.com" || host == "www.maremovals.com") return false
       }
+      openExternally(uri.toString())
+      return true
+    }
 
-      // Use the default back button implementation on Android S
-      // because it's doing more than [Activity.moveTaskToBack] in fact.
-      super.invokeDefaultOnBackPressed()
+    override fun onPageFinished(view: WebView, url: String) {
+      showLoading(false)
+    }
+
+    override fun onReceivedError(
+      view: WebView,
+      request: WebResourceRequest,
+      error: WebResourceError,
+    ) {
+      if (request.isForMainFrame) {
+        showLoading(false)
+        showError(true)
+      }
+    }
   }
 
   companion object {
-    @Volatile private var pendingDeeplink: String? = null
-
-    /** Called by MAAdminIntentsModule from JS; consumes the value. */
-    @JvmStatic
-    fun consumePendingDeeplink(): String? {
-      val v = pendingDeeplink
-      pendingDeeplink = null
-      return v
-    }
+    private const val ADMIN_URL = "https://www.maremovals.com/admin"
   }
 }

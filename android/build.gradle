@@ -1,28 +1,10 @@
-// Top-level build file where you can add configuration options common to all sub-projects/modules.
-
 buildscript {
   repositories {
     google()
     mavenCentral()
   }
   dependencies {
-    classpath('com.android.tools.build:gradle')
-    classpath('com.facebook.react:react-native-gradle-plugin')
-    classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
-    // Pulled in by @react-native-firebase/app. The `app/build.gradle`
-    // applies it only when `google-services.json` is actually present so
-    // the project still builds on a fresh clone before Firebase setup.
-    classpath('com.google.gms:google-services:4.4.2')
+    classpath('com.android.tools.build:gradle:8.12.0')
+    classpath('org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.20')
   }
 }
-
-allprojects {
-  repositories {
-    google()
-    mavenCentral()
-    maven { url 'https://www.jitpack.io' }
-  }
-}
-
-apply plugin: "expo-root-project"
-apply plugin: "com.facebook.react.rootproject"
