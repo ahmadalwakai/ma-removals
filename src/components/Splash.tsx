@@ -1,23 +1,26 @@
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
-import { APP_NAME, colors } from "../config";
+import { colors } from "../config";
+import { appDisplayName, type Language, uiText } from "../lib/i18n";
 
 type Props = {
   /** Optional secondary line beneath the brand mark. */
   message?: string;
+  language: Language;
 };
 
 /**
- * Brand splash / loading view. Shown while the WebView boots and while
- * the user pulls-to-refresh below an empty document.
+ * Brand splash / loading view shown while the native admin app boots or syncs.
  */
-export function Splash({ message }: Props) {
+export function Splash({ message, language }: Props) {
   return (
     <View style={styles.root}>
       <View style={styles.mark}>
         <Text style={styles.markText}>M&A</Text>
       </View>
-      <Text style={styles.title}>{APP_NAME}</Text>
-      <Text style={styles.subtitle}>Operations Console</Text>
+      <Text style={styles.title}>{appDisplayName(language)}</Text>
+      <Text style={styles.subtitle}>
+        {uiText(language, "Operations board", "لوحة العمليات")}
+      </Text>
       <ActivityIndicator
         size="small"
         color={colors.emerald}
@@ -58,7 +61,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   subtitle: {
-    color: colors.slate400,
+    color: colors.white,
     fontSize: 13,
     marginTop: 4,
     letterSpacing: 1.2,
@@ -68,7 +71,7 @@ const styles = StyleSheet.create({
     marginTop: 28,
   },
   message: {
-    color: colors.slate400,
+    color: colors.white,
     fontSize: 13,
     marginTop: 14,
     textAlign: "center",

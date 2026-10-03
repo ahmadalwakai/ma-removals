@@ -15,8 +15,8 @@ interface UsePushRegistrationResult {
 /**
  * Registers the device with Firebase Cloud Messaging on launch and
  * keeps a stable reference to the current FCM token. The token is
- * forwarded to the JS layer via the callback so it can be posted to
- * `/api/admin/push/register` over the WebView session cookie.
+ * forwarded to the native app via the callback so it can be posted to
+ * `/api/admin/mobile/push/register` with the mobile admin bearer token.
  *
  * Foreground messages are intentionally NOT handled here — they are
  * delivered by the native FCMService so that the OS draws the

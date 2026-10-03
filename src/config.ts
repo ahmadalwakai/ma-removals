@@ -1,34 +1,39 @@
 import Constants from "expo-constants";
 
-import { getAdminWebViewUrl, getAllowedHosts } from "./lib/admin-url";
+import {
+  getAdminApiBaseUrl,
+  getConfiguredAdminUrl,
+} from "./lib/admin-url";
 
-/** App version reported to the web via UA and the native bridge. */
+/** App version reported to the API and native alert stack. */
 export const APP_VERSION: string =
   Constants.expoConfig?.version ?? "1.0.0";
 
 /**
- * Base URL of the M&A Removals admin web app. Resolved through the production
+ * Canonical URL of the M&A Removals admin web app. Resolved through the production
  * safety layer in `lib/admin-url`, which rejects localhost / cleartext URLs
  * so a shipped APK can never point at a developer machine.
  */
-export const ADMIN_URL: string = getAdminWebViewUrl();
+export const ADMIN_WEB_URL: string = getConfiguredAdminUrl();
 
-/**
- * Allowed host(s). Navigation to any host outside this list is opened
- * in the system browser instead of inside the WebView (auth providers,
- * external help links, etc.). Driver/customer pages on the same origin
- * are still allowed because they share the host.
- */
-export const ALLOWED_HOSTS: string[] = getAllowedHosts();
+/** Production backend origin used by the native admin API client. */
+export const API_BASE_URL: string = getAdminApiBaseUrl();
+
+/** Public Mapbox token used only for static route preview images. */
+export const MAPBOX_PUBLIC_TOKEN: string = (
+  process.env.EXPO_PUBLIC_MAPBOX_TOKEN ??
+  process.env.NEXT_PUBLIC_MAPBOX_TOKEN ??
+  ""
+).replace(/^"|"$/g, "");
 
 /**
  * Brand tokens — mirror the web admin (Chakra theme + globals.css).
  */
 export const colors = {
-  emerald: "#10B981",
-  emeraldDark: "#059669",
-  ink: "#0F172A",
-  inkSoft: "#1E293B",
+  emerald: "#2563EB",
+  emeraldDark: "#2563EB",
+  ink: "#000000",
+  inkSoft: "#0A0A0C",
   slate50: "#F1F5F9",
   slate200: "#E2E8F0",
   slate400: "#94A3B8",
@@ -45,8 +50,8 @@ export const APP_NAME = "M&A Admin";
  * (new bookings, driver SOS, chat replies). Mirrors the channel
  * created natively in Notifier.kt.
  */
-export const NOTIFICATION_CHANNEL_ID = "ma-admin-alerts";
-export const NOTIFICATION_CHANNEL_NAME = "Admin Alerts";
+export const NOTIFICATION_CHANNEL_ID = "ma-admin-critical-alerts-v2";
+export const NOTIFICATION_CHANNEL_NAME = "Admin alerts";
 
 /**
  * Time the app may sit in the background before it requires

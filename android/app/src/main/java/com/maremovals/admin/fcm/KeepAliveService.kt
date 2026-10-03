@@ -32,13 +32,22 @@ class KeepAliveService : Service() {
 
   override fun onCreate() {
     super.onCreate()
-    ensureChannel()
-    startInForeground()
+    startSafely()
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    startInForeground()
+    startSafely()
     return START_STICKY
+  }
+
+  private fun startSafely() {
+    try {
+      ensureChannel()
+      startInForeground()
+    } catch (t: Throwable) {
+      Log.w(TAG, "KeepAliveService startup failed; stopping service", t)
+      stopSelf()
+    }
   }
 
   private fun startInForeground() {
@@ -88,21 +97,25 @@ class KeepAliveService : Service() {
 
   private fun ensureChannel() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    if (nm.getNotificationChannel(KEEPALIVE_CHANNEL_ID) != null) return
-    val ch = NotificationChannel(
-      KEEPALIVE_CHANNEL_ID,
-      "Background service",
-      NotificationManager.IMPORTANCE_MIN,
-    ).apply {
-      description = "Keeps push notifications working when the app is closed."
-      setShowBadge(false)
-      lockscreenVisibility = NotificationCompat.VISIBILITY_SECRET
-      enableVibration(false)
-      enableLights(false)
-      setSound(null, null)
+    try {
+      val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      if (nm.getNotificationChannel(KEEPALIVE_CHANNEL_ID) != null) return
+      val ch = NotificationChannel(
+        KEEPALIVE_CHANNEL_ID,
+        "Background service",
+        NotificationManager.IMPORTANCE_MIN,
+      ).apply {
+        description = "Keeps push notifications working when the app is closed."
+        setShowBadge(false)
+        lockscreenVisibility = NotificationCompat.VISIBILITY_SECRET
+        enableVibration(false)
+        enableLights(false)
+        setSound(null, null)
+      }
+      nm.createNotificationChannel(ch)
+    } catch (t: Throwable) {
+      Log.w(TAG, "KeepAlive notification channel setup failed", t)
     }
-    nm.createNotificationChannel(ch)
   }
 
   companion object {

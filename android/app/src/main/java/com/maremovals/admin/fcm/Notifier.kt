@@ -25,35 +25,49 @@ import com.maremovals.admin.R
  */
 internal object Notifier {
 
-  const val CHANNEL_ID = "ma-admin-alerts"
-  private const val CHANNEL_NAME = "Admin Alerts"
-  private const val CHANNEL_DESC = "New bookings, driver SOS, chat replies"
+  const val CHANNEL_ID = "ma-admin-critical-alerts-v2"
+  private const val CHANNEL_NAME = "Critical admin alerts"
+  private const val CHANNEL_DESC = "New bookings, driver SOS, chat replies with lock-screen sound"
+
+  fun alertSoundUri(context: Context): Uri =
+    Uri.parse("android.resource://${context.packageName}/${R.raw.universfield_ringtone_052_494940}")
 
   fun ensureChannel(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    if (nm.getNotificationChannel(CHANNEL_ID) != null) return
+    try {
+      val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      if (nm.getNotificationChannel(CHANNEL_ID) != null) return
 
-    val channel = NotificationChannel(
-      CHANNEL_ID,
-      CHANNEL_NAME,
-      NotificationManager.IMPORTANCE_HIGH,
-    ).apply {
-      description = CHANNEL_DESC
-      enableLights(true)
-      enableVibration(true)
-      setBypassDnd(true)
-      lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
       val attrs = AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+        .setUsage(AudioAttributes.USAGE_ALARM)
         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
         .build()
-      setSound(
-        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
-        attrs,
-      )
+      val channel = NotificationChannel(
+        CHANNEL_ID,
+        CHANNEL_NAME,
+        NotificationManager.IMPORTANCE_HIGH,
+      ).apply {
+        description = CHANNEL_DESC
+        enableLights(true)
+        enableVibration(true)
+        lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+
+        try {
+          setBypassDnd(true)
+        } catch (t: Throwable) {
+          Log.w(TAG, "DND bypass was not allowed for alert channel", t)
+        }
+
+        try {
+          setSound(alertSoundUri(context), attrs)
+        } catch (t: Throwable) {
+          Log.w(TAG, "Custom alert sound could not be attached to channel", t)
+        }
+      }
+      nm.createNotificationChannel(channel)
+    } catch (t: Throwable) {
+      Log.w(TAG, "Alert notification channel setup failed", t)
     }
-    nm.createNotificationChannel(channel)
   }
 
   fun show(
@@ -106,10 +120,16 @@ internal object Notifier {
       .setAutoCancel(true)
       .setContentIntent(tapPi)
       .setFullScreenIntent(fullScreenPi, true)
-      .setDefaults(NotificationCompat.DEFAULT_ALL)
+      .setSound(alertSoundUri(context))
+      .setVibrate(longArrayOf(0, 550, 300, 550, 300, 900))
+      .setDefaults(NotificationCompat.DEFAULT_LIGHTS)
 
-    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    nm.notify(notificationId, builder.build())
+    try {
+      val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      nm.notify(notificationId, builder.build())
+    } catch (t: Throwable) {
+      Log.w(TAG, "Alert notification display failed", t)
+    }
 
     // OEM reliability: setFullScreenIntent silently degrades to a heads-up
     // (no Activity launch over the keyguard) on Samsung One UI / Xiaomi MIUI

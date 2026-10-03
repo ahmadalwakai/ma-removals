@@ -1,5 +1,5 @@
 <resources>
-  <color name="splashscreen_background">#FFFFFF</color>
+  <color name="splashscreen_background">#F3F6FB</color>
   <color name="iconBackground">#0F172A</color>
-  <color name="colorPrimary">#10B981</color>
+  <color name="colorPrimary">#2563EB</color>
 </resources>

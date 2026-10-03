@@ -5,8 +5,7 @@ import * as ExpoLinking from "expo-linking";
 /**
  * Resolves the initial deep-link URL when the app is launched from a
  * notification, push intent or `maremovalsadmin://` link. Returns
- * `null` until the URL is known (or none was provided), so the caller
- * can fall back to ADMIN_URL.
+ * `null` until the URL is known (or none was provided).
  *
  * Sources, in order of precedence:
  *  1. Native intent extra `deeplink` set by FCMService when the user

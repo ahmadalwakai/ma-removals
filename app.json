@@ -2,14 +2,14 @@
   "expo": {
     "name": "M&A Admin",
     "slug": "ma-removals-admin-android",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "scheme": "maremovalsadmin",
-    "primaryColor": "#10B981",
+    "primaryColor": "#2563EB",
     "splash": {
-      "backgroundColor": "#0F172A",
+      "backgroundColor": "#F3F6FB",
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain"
     },
@@ -59,8 +59,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow $(PRODUCT_NAME) to access your photos to upload booking and item images.",
-          "cameraPermission": "Allow $(PRODUCT_NAME) to use the camera to capture booking and item images.",
+          "photosPermission": "Allow $(PRODUCT_NAME) to access photos for booking and item uploads.",
+          "cameraPermission": "Allow $(PRODUCT_NAME) to use the camera for booking and item photos.",
           "microphonePermission": false
         }
       ],
@@ -72,7 +72,7 @@
       ]
     ],
     "extra": {
-      "adminUrl": "https://maremovals.com/admin",
+      "adminUrl": "https://www.maremovals.com/admin",
       "eas": {
         "projectId": "a3f3d145-9f6a-4616-95fd-fd3f4ebb4b4a"
       }

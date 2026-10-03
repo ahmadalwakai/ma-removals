@@ -3,6 +3,7 @@ import { AppState, Platform } from "react-native";
 import * as LocalAuthentication from "expo-local-authentication";
 
 import { APP_LOCK_TIMEOUT_MS } from "../config";
+import { type Language, uiText } from "../lib/i18n";
 
 type LockState = "unknown" | "locked" | "unlocked";
 
@@ -23,7 +24,7 @@ interface UseAppLockResult {
  *   bypassed (so the app remains usable for staff on shared hardware
  *   before they enrol a fingerprint).
  */
-export function useAppLock(): UseAppLockResult {
+export function useAppLock(language: Language): UseAppLockResult {
   const [state, setState] = useState<LockState>("unknown");
   const lastBackgroundedAt = useRef<number | null>(null);
 
@@ -40,10 +41,10 @@ export function useAppLock(): UseAppLockResult {
         return true;
       }
       const res = await LocalAuthentication.authenticateAsync({
-        promptMessage: "Unlock M&A Admin",
-        fallbackLabel: "Use device PIN",
+        promptMessage: uiText(language, "Unlock M&A Admin", "فتح إدارة M&A"),
+        fallbackLabel: uiText(language, "Use device passcode", "استخدم رمز الجهاز"),
         disableDeviceFallback: false,
-        cancelLabel: "Cancel",
+        cancelLabel: uiText(language, "Cancel", "إلغاء"),
       });
       if (res.success) {
         setState("unlocked");
@@ -56,7 +57,7 @@ export function useAppLock(): UseAppLockResult {
       setState("unlocked");
       return true;
     }
-  }, []);
+  }, [language]);
 
   const lock = useCallback(() => {
     setState("locked");

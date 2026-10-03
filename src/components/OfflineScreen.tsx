@@ -1,20 +1,25 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { colors } from "../config";
+import { type Language, uiText } from "../lib/i18n";
 
 type Props = {
+  language: Language;
   onRetry: () => void;
 };
 
-export function OfflineScreen({ onRetry }: Props) {
+export function OfflineScreen({ language, onRetry }: Props) {
   return (
     <View style={styles.root}>
       <View style={styles.icon}>
         <Text style={styles.iconText}>!</Text>
       </View>
-      <Text style={styles.title}>You're offline</Text>
+      <Text style={styles.title}>{uiText(language, "You are offline", "أنت غير متصل")}</Text>
       <Text style={styles.body}>
-        Check your connection — the admin console needs internet access to
-        sync bookings, drivers and jobs in real time.
+        {uiText(
+          language,
+          "Check your internet connection. The admin app needs connectivity to sync bookings, drivers, and live jobs.",
+          "تحقق من اتصالك بالإنترنت. تحتاج لوحة الإدارة إلى الاتصال لمزامنة الحجوزات والسائقين والمهام مباشرة.",
+        )}
       </Text>
       <Pressable
         onPress={onRetry}
@@ -24,7 +29,7 @@ export function OfflineScreen({ onRetry }: Props) {
         ]}
         android_ripple={{ color: colors.emeraldDark }}
       >
-        <Text style={styles.buttonText}>Try again</Text>
+        <Text style={styles.buttonText}>{uiText(language, "Try again", "حاول مرة أخرى")}</Text>
       </Pressable>
     </View>
   );
@@ -61,7 +66,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   body: {
-    color: colors.slate400,
+    color: colors.white,
     fontSize: 14,
     lineHeight: 20,
     textAlign: "center",

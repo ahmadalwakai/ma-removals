@@ -67,20 +67,20 @@ class LockscreenAlertActivity : Activity() {
     val container = LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       gravity = Gravity.CENTER
-      setBackgroundColor(Color.parseColor("#F00F172A"))
+      setBackgroundColor(Color.WHITE)
       setPadding(pad, pad, pad, pad)
     }
 
     container.addView(TextView(this).apply {
       text = title
       textSize = 22f
-      setTextColor(Color.WHITE)
+      setTextColor(Color.parseColor("#0F172A"))
       gravity = Gravity.CENTER
     })
     container.addView(TextView(this).apply {
       text = body
       textSize = 16f
-      setTextColor(Color.parseColor("#CBD5F5"))
+      setTextColor(Color.parseColor("#334155"))
       gravity = Gravity.CENTER
       val topMargin = (resources.displayMetrics.density * 12).toInt()
       val lp = LinearLayout.LayoutParams(
@@ -102,14 +102,14 @@ class LockscreenAlertActivity : Activity() {
       lp.topMargin = topMargin
       layoutParams = lp
     }
-    buttonRow.addView(buildButton("Dismiss", Color.parseColor("#475569")) {
+    buttonRow.addView(buildButton("Dismiss", Color.parseColor("#E2E8F0"), Color.parseColor("#0F172A")) {
       finish()
     })
     buttonRow.addView(View(this).apply {
       val gap = (resources.displayMetrics.density * 12).toInt()
       layoutParams = LinearLayout.LayoutParams(gap, 1)
     })
-    buttonRow.addView(buildButton("Open", Color.parseColor("#10B981")) {
+    buttonRow.addView(buildButton("Open booking", Color.parseColor("#2563EB"), Color.WHITE) {
       val open = Intent(this, MainActivity::class.java).apply {
         flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         if (!deeplink.isNullOrBlank()) putExtra(Notifier.EXTRA_DEEPLINK, deeplink)
@@ -148,11 +148,11 @@ class LockscreenAlertActivity : Activity() {
 
   private fun startAlertSignals() {
     try {
-      val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+      val uri = Notifier.alertSoundUri(this)
       val rt = RingtoneManager.getRingtone(applicationContext, uri)
       if (rt != null) {
         val attrs = AudioAttributes.Builder()
-          .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+          .setUsage(AudioAttributes.USAGE_ALARM)
           .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
           .build()
         rt.audioAttributes = attrs
@@ -192,10 +192,10 @@ class LockscreenAlertActivity : Activity() {
     wakeLock = null
   }
 
-  private fun buildButton(label: String, bg: Int, onClick: () -> Unit): Button {
+  private fun buildButton(label: String, bg: Int, fg: Int, onClick: () -> Unit): Button {
     return Button(this).apply {
       text = label
-      setTextColor(Color.WHITE)
+      setTextColor(fg)
       setBackgroundColor(bg)
       val padH = (resources.displayMetrics.density * 24).toInt()
       val padV = (resources.displayMetrics.density * 10).toInt()

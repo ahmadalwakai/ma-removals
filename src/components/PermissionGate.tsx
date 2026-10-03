@@ -2,9 +2,11 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { colors } from "../config";
 import type { PermissionGateState } from "../hooks/usePermissionGate";
+import { type Language, uiText } from "../lib/i18n";
 
 interface Props {
   gate: PermissionGateState;
+  language: Language;
 }
 
 /**
@@ -13,30 +15,41 @@ interface Props {
  * new-booking / SOS alerts over the lock screen, which silently fail
  * without USE_FULL_SCREEN_INTENT and a battery-optimisation exemption.
  */
-export function PermissionGate({ gate }: Props) {
+export function PermissionGate({ gate, language }: Props) {
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>One more step</Text>
+        <Text style={styles.title}>{uiText(language, "One last step", "خطوة أخيرة")}</Text>
         <Text style={styles.subtitle}>
-          To make sure new bookings and SOS alerts wake the screen even when
-          your phone is locked, please grant the permissions below.
+          {uiText(
+            language,
+            "To make new-booking and emergency alerts wake the screen even when the phone is locked, please grant the following permissions.",
+            "حتى تصل تنبيهات الحجوزات الجديدة ونداءات الطوارئ وتوقظ الشاشة حتى عندما يكون الهاتف مقفولًا، يرجى منح الأذونات التالية.",
+          )}
         </Text>
 
         {!gate.fullScreenIntent ? (
           <PermissionRow
-            label="Full-screen alerts"
-            description="Lets alerts pop over the lock screen."
-            actionLabel="Allow"
+            label={uiText(language, "Full-screen alerts", "تنبيهات ملء الشاشة")}
+            description={uiText(
+              language,
+              "Allows urgent alerts to appear over the lock screen.",
+              "تسمح للتنبيهات بالظهور فوق شاشة القفل.",
+            )}
+            actionLabel={uiText(language, "Allow", "السماح")}
             onPress={gate.openFullScreenIntentSettings}
           />
         ) : null}
 
         {!gate.batteryUnrestricted ? (
           <PermissionRow
-            label="Unrestricted battery"
-            description="Keeps alerts arriving when the app is closed."
-            actionLabel="Allow"
+            label={uiText(language, "Unrestricted battery", "بطارية غير مقيّدة")}
+            description={uiText(
+              language,
+              "Keeps alerts reliable even when the app is closed.",
+              "تضمن وصول التنبيهات حتى عند إغلاق التطبيق.",
+            )}
+            actionLabel={uiText(language, "Allow", "السماح")}
             onPress={gate.requestBatteryExemption}
           />
         ) : null}
@@ -46,7 +59,9 @@ export function PermissionGate({ gate }: Props) {
           accessibilityRole="button"
           onPress={gate.refresh}
         >
-          <Text style={styles.refreshText}>I've granted these</Text>
+          <Text style={styles.refreshText}>
+            {uiText(language, "I granted these permissions", "منحت هذه الأذونات")}
+          </Text>
         </Pressable>
       </ScrollView>
     </View>
@@ -95,7 +110,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   subtitle: {
-    color: colors.slate400,
+    color: colors.white,
     fontSize: 15,
     lineHeight: 22,
     marginBottom: 28,
@@ -119,7 +134,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   rowDescription: {
-    color: colors.slate400,
+    color: colors.white,
     fontSize: 13,
     lineHeight: 18,
   },
@@ -141,7 +156,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   refreshText: {
-    color: colors.slate400,
+    color: colors.white,
     fontSize: 15,
     fontWeight: "600",
   },

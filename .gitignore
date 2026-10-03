@@ -16,6 +16,7 @@ expo-env.d.ts
 *.p8
 *.p12
 *.key
+*.keystore
 *.mobileprovision
 
 # Metro
@@ -48,3 +49,4 @@ yarn-error.*
 /android/.cxx/
 /android/app/.cxx/
 /android/local.properties
+/android/keystore.properties

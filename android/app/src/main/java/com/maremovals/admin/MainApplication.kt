@@ -2,6 +2,7 @@ package com.maremovals.admin
 
 import android.app.Application
 import android.content.res.Configuration
+import android.util.Log
 
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
@@ -45,7 +46,11 @@ class MainApplication : Application(), ReactApplication {
     // Application.onCreate (before any Activity is resumed) is disallowed on
     // Android 12+ and throws inside startForeground(), crashing the process.
     // MainActivity.onResume starts it once the app is genuinely foreground.
-    Notifier.ensureChannel(this)
+    try {
+      Notifier.ensureChannel(this)
+    } catch (t: Throwable) {
+      Log.w("MA.MainApplication", "Notification channel setup failed during app startup", t)
+    }
   }
 
   override fun onConfigurationChanged(newConfig: Configuration) {

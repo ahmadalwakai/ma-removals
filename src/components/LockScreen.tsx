@@ -1,22 +1,28 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { APP_NAME, colors } from "../config";
+import { colors } from "../config";
+import { appDisplayName, type Language, uiText } from "../lib/i18n";
 
 interface Props {
+  language: Language;
   onUnlock: () => void;
 }
 
-export function LockScreen({ onUnlock }: Props) {
+export function LockScreen({ language, onUnlock }: Props) {
   return (
     <View style={styles.root}>
-      <Text style={styles.title}>{APP_NAME}</Text>
-      <Text style={styles.subtitle}>Locked for your security</Text>
+      <Text style={styles.title}>{appDisplayName(language)}</Text>
+      <Text style={styles.subtitle}>
+        {uiText(language, "Locked to protect your account", "مقفول لحماية حسابك")}
+      </Text>
       <Pressable
         style={styles.button}
         accessibilityRole="button"
         onPress={onUnlock}
       >
-        <Text style={styles.buttonText}>Unlock</Text>
+        <Text style={styles.buttonText}>
+          {uiText(language, "Unlock", "فتح القفل")}
+        </Text>
       </Pressable>
     </View>
   );
@@ -37,7 +43,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   subtitle: {
-    color: colors.slate400,
+    color: colors.white,
     fontSize: 14,
     marginBottom: 32,
   },

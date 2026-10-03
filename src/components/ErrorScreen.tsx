@@ -1,20 +1,28 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { colors } from "../config";
+import { type Language, uiText } from "../lib/i18n";
 
 type Props = {
   description?: string | null;
   /** The URL that failed to load. Shown only in development builds. */
   failedUrl?: string | null;
+  language: Language;
   onRetry: () => void;
 };
 
-export function ErrorScreen({ description, failedUrl, onRetry }: Props) {
+export function ErrorScreen({ description, failedUrl, language, onRetry }: Props) {
   return (
     <View style={styles.root}>
-      <Text style={styles.title}>Couldn't load admin console</Text>
+      <Text style={styles.title}>
+        {uiText(language, "Could not load the admin panel", "تعذر تحميل لوحة الإدارة")}
+      </Text>
       <Text style={styles.body}>
         {description ??
-          "The admin dashboard couldn't be reached. Check your connection and try again."}
+          uiText(
+            language,
+            "The admin panel could not be reached. Check the connection and try again.",
+            "تعذر الوصول إلى لوحة الإدارة. تحقق من الاتصال ثم حاول مرة أخرى.",
+          )}
       </Text>
       {/* Surface the failing URL only in development so we never leak internal
           endpoints in a shipped APK. */}
@@ -31,7 +39,9 @@ export function ErrorScreen({ description, failedUrl, onRetry }: Props) {
         ]}
         android_ripple={{ color: colors.emeraldDark }}
       >
-        <Text style={styles.buttonText}>Reload</Text>
+        <Text style={styles.buttonText}>
+          {uiText(language, "Reload", "إعادة التحميل")}
+        </Text>
       </Pressable>
     </View>
   );
@@ -53,14 +63,14 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   body: {
-    color: colors.slate400,
+    color: colors.white,
     fontSize: 14,
     lineHeight: 20,
     textAlign: "center",
     marginBottom: 28,
   },
   debugUrl: {
-    color: colors.slate500,
+    color: colors.white,
     fontSize: 12,
     fontFamily: "monospace",
     textAlign: "center",

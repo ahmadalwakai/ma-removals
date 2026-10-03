@@ -1,25 +1,27 @@
 import Constants from "expo-constants";
 
 /**
- * The one and only production admin dashboard the APK is allowed to open.
- * The native shell is a thin WebView wrapper around this URL.
+ * Canonical production admin URL. The native app uses this only to derive
+ * the backend origin for `/api/admin/mobile/*` and to keep any configured
+ * URL away from localhost / cleartext mistakes.
+ *
+ * NOTE: this points at the canonical `www.` host. The apex
+ * (`maremovals.com`) 301-redirects to `www.maremovals.com`.
  */
-export const PRODUCTION_ADMIN_URL = "https://maremovals.com/admin";
-
-/** Host of the production URL — used to derive the WebView allow-list. */
-export const PRODUCTION_ADMIN_HOST = "maremovals.com";
+export const PRODUCTION_ADMIN_URL = "https://www.maremovals.com/admin";
 
 type Extra = {
+  apiBaseUrl?: string;
   adminUrl?: string;
 };
 
 /**
- * Substrings / shapes that must NEVER be the active WebView URL in a shipped
- * APK. They all point at a developer machine and are unreachable from a real
- * Android device:
+ * Substrings / shapes that must NEVER be the active production URL in a
+ * shipped APK. They all point at a developer machine and are unreachable from
+ * a real Android device:
  *
  *  - `localhost` / `127.0.0.1` resolve to the *phone itself*, not your PC, so
- *    the WebView loads nothing and the screen hangs or crashes.
+ *    API calls hit the phone rather than the server.
  *  - `10.0.2.2` is the Android *emulator* alias for the host loopback — it is
  *    meaningless on physical hardware.
  *  - `192.168.*` / `172.*` LAN IPs only work while the phone is on the same
@@ -39,8 +41,14 @@ function isUnsafeUrl(url: string): boolean {
   );
 }
 
+function isLocalWebPreview(): boolean {
+  if (typeof window === "undefined") return false;
+  const hostname = window.location.hostname.toLowerCase();
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
 /**
- * Resolve the URL the admin WebView should load.
+ * Resolve the canonical admin web URL.
  *
  * Resolution order:
  *  1. `app.json` -> `expo.extra.adminUrl`, but only if it is a safe HTTPS URL.
@@ -51,11 +59,21 @@ function isUnsafeUrl(url: string): boolean {
  * never throw — we silently fall back to the production URL so the APK can
  * never ship pointing at localhost.
  */
-export function getAdminWebViewUrl(): string {
+export function getConfiguredAdminUrl(): string {
   const extra = (Constants.expoConfig?.extra ?? {}) as Extra;
   const configured = typeof extra.adminUrl === "string" ? extra.adminUrl.trim() : "";
 
+  if (isLocalWebPreview()) {
+    return "http://localhost:3000/admin";
+  }
+
   if (configured && !isUnsafeUrl(configured)) {
+    return configured;
+  }
+
+  // Expo web in local dev runs in the browser on the same machine, so
+  // localhost can be valid there. Keep production locked down.
+  if (configured && isUnsafeUrl(configured) && __DEV__ && typeof window !== "undefined") {
     return configured;
   }
 
@@ -75,13 +93,33 @@ export function getAdminWebViewUrl(): string {
 }
 
 /**
- * The host(s) allowed to render inside the WebView. Anything else is handed
- * off to the system browser. Derived from the resolved (safe) admin URL.
+ * Base origin for native API calls. The native admin app talks to
+ * `/api/admin/mobile/*` directly.
  */
-export function getAllowedHosts(): string[] {
+export function getAdminApiBaseUrl(): string {
+  const extra = (Constants.expoConfig?.extra ?? {}) as Extra;
+  const configured =
+    typeof extra.apiBaseUrl === "string" ? extra.apiBaseUrl.trim() : "";
+
+  if (isLocalWebPreview()) {
+    return "http://localhost:3000";
+  }
+
+  if (configured && !isUnsafeUrl(configured)) {
+    return new URL(configured).origin;
+  }
+
+  if (configured && isUnsafeUrl(configured) && __DEV__ && typeof window !== "undefined") {
+    return new URL(configured).origin;
+  }
+
+  if (__DEV__ && typeof window !== "undefined") {
+    return "http://localhost:3000";
+  }
+
   try {
-    return [new URL(getAdminWebViewUrl()).host];
+    return new URL(getConfiguredAdminUrl()).origin;
   } catch {
-    return [PRODUCTION_ADMIN_HOST];
+    return new URL(PRODUCTION_ADMIN_URL).origin;
   }
 }
